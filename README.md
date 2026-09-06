@@ -46,7 +46,7 @@
 > `example.litematic`
   
 得到：
-> `example\_V6\_\[1788703616542\].litematic`
+> `example_V6_[1788703616542].litematic`
   
 **特别的：**  
 程序会使用当前系统时间的毫秒级Unix时间戳生成新文件名，并检查生成的文件名是否已经存在。  
