@@ -2,11 +2,11 @@
 [![GitHub Releases](https://shields.io/github/v/release/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
 [![GitHub Releases downloads](https://shields.io/github/downloads/chenjunfu2/Litematic_V7_To_V6/total)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
 [![GitHub Repo stars](https://shields.io/github/stars/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/)  
-本工具在尽可能 **保留方块、方块实体、实体等数据** 的情况下，以映射数据的方式降低投影原理图的数据版本(或称之为投影降级)。  
-  
-工具会将投影原理图 **从 V7(MC1.20.5+) 转换到 V6(MC1.20.4-)** ，使得旧版MC可以在尽量少数据损失的情况下打开新版本投影原理图。  
+本工具在尽可能 **保留方块、方块实体、实体等数据** 的情况下，以映射数据的方式降低投影原理图的数据版本(或称之为投影降级)，将投影原理图 **从 V7(MC1.20.5+) 转换到 V6(MC1.20.4-)** ，使得旧版MC可以在尽量少数据损失的情况下打开新版本投影原理图。  
   
 但由于不同 Minecraft / Litematica 版本之间存在数据格式差异，**不能保证所有新版本数据都能够在旧版本中完全保留或正常使用**。  
+
+工具为离线转换工具，不依赖任何 Minecraft 相关环境。
   
 项目主要使用 C++ 编写，并支持跨平台构建。  
   
@@ -15,15 +15,14 @@
 转换器可以一次性转换**一个或多个**投影原理图文件。  
   
 **在windows系统中：**  
-> 将一个或多个需要降低数据版本的投影文件，拖拽到程序上，然后松开。
+> 将一个或多个需要降低数据版本的投影原理图文件，拖拽到程序上，然后松开。
 >  
 > *（当然你也可以在 Windows 中使用 Linux 的方式~）*
 > 
-> **特别注意，是拖拽投影文件到程序文件上，显示为用xxx（程序名称）打开，而不是启动程序后把投影文件拖拽到程序窗口里！**  
-> **不要再因为这种奇怪的问题给我报程序不工作的BUG了！**  
+> **特别注意，是拖拽投影原理图文件到程序文件上，显示为用xxx（程序名称）打开，而不是启动程序后把投影原理图文件拖拽到程序窗口里！不要再因为这种奇怪的问题给我报程序不工作的BUG了！**  
   
 **在linux系统与其它系统中：**  
-> 将一个或多个需要降低数据版本的投影文件，作为启动命令参数传递，并执行。
+> 将一个或多个需要降低数据版本的投影原理图文件，作为启动命令参数传递，并执行。
 > 
 > - 单个文件
 >   ```text
@@ -49,12 +48,12 @@
 > `example_V6_[1788703616542].litematic`
   
 **特别的：**  
-程序会使用当前系统时间的毫秒级Unix时间戳生成新文件名，并检查生成的文件名是否已经存在。  
+程序会使用当前系统时间的毫秒级 Unix 时间戳生成新文件名，并检查生成的文件名是否已经存在。  
 如果生成的文件名冲突，会等待一段时间后重新生成文件名并再次尝试，最多尝试 10 次，而后失败，  
 如果发生此类失败情况，可以检查是否因为目录下有过多此类文件或更换干净目录重试转换。  
   
 ## 备注
-**建议始终保留原始 Litematica 原理图文件，不要在获得转换结果后删除原文件。**  
+**建议始终保留原始投影原理图文件，不要在获得转换结果后删除原文件。**  
 如果未来程序修复了 Bug、改进了转换逻辑，保留原始文件可以重新进行转换，从而获得更好的转换结果。  
   
 ## 跨平台
@@ -78,11 +77,11 @@
 [![GitHub Releases downloads](https://shields.io/github/downloads/chenjunfu2/Litematic_V7_To_V6/total)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
 [![GitHub Repo stars](https://shields.io/github/stars/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/)
 
-This tool downgrades Litematica schematic data using a **data-mapping approach**, while attempting to **preserve blocks, block entities, entities, and other data** as much as possible.
-
-It converts Litematica schematics **from V7 (MC 1.20.5+) to V6 (MC 1.20.4-)**, allowing older versions of Minecraft to open schematics created by newer versions while minimizing data loss.
+This tool downgrades Litematica schematic data using a **data-mapping approach**, while attempting to **preserve blocks, block entities, entities, and other data** as much as possible. It converts Litematica schematics **from V7 (MC 1.20.5+) to V6 (MC 1.20.4-)**, allowing older versions of Minecraft to open schematics created by newer versions while minimizing data loss.
 
 However, due to differences in data formats between different Minecraft / Litematica versions, **there is no guarantee that all data from newer versions can be fully preserved or used correctly in older versions**.
+
+This is an offline conversion tool and does not depend on any Minecraft-related environment.
 
 The project is mainly written in C++ and supports cross-platform builds.
 
