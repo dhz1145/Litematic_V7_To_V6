@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>LitematicGUI</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- 可用环境变量 QTDIR 指向 Qt MSVC 套件，例如 C:\Qt\6.7.3\msvc2019_64 -->
+    <QtDir Condition="'$(QTDIR)' != ''">$(QTDIR)</QtDir>
+    <QtDir Condition="'$(QtDir)' == ''">C:\Qt\6.7.3\msvc2019_64</QtDir>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="..\BasicConfiguration.props" Condition="Exists('..\BasicConfiguration.props')" />
+    <Import Project="..\LibraryDependencies.props" Condition="Exists('..\LibraryDependencies.props')" />
+  </ImportGroup>
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <TargetName>Litematic_GUI</TargetName>
+    <LinkIncremental Condition="'$(Configuration)'=='Debug'">true</LinkIncremental>
+    <LinkIncremental Condition="'$(Configuration)'=='Release'">false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\Litematic_V7_To_V6;$(ProjectDir)..\Dependencies;$(QtDir)\include;$(QtDir)\include\QtCore;$(QtDir)\include\QtGui;$(QtDir)\include\QtWidgets;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(QtDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies Condition="'$(Configuration)'=='Debug'">Qt6Widgetsd.lib;Qt6Guid.lib;Qt6Cored.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(Configuration)'=='Release'">Qt6Widgets.lib;Qt6Gui.lib;Qt6Core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="ConvertWorker.cpp" />
+    <ClCompile Include="..\Litematic_V7_To_V6\LitematicFileConversion.cpp" />
+    <ClCompile Include="moc\moc_MainWindow.cpp" />
+    <ClCompile Include="moc\moc_ConvertWorker.cpp" />
+    <ClCompile Include="moc\qrc_icons.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="MainWindow.h" />
+    <ClInclude Include="ConvertWorker.h" />
+    <ClInclude Include="..\Litematic_V7_To_V6\LitematicFileConversion.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="icons.qrc" />
+    <ResourceCompile Include="app.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Dependencies\xxhash\xxhash.vcxproj">
+      <Project>{dc504567-a6fa-4e8f-a354-e1ecfdde5d81}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\Dependencies\zlib\zlib.vcxproj">
+      <Project>{e304062b-8190-4215-affe-d2bf30de6600}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <!-- 生成 moc / rcc 源文件；需已安装 Qt，且 PATH 或 QtDir\bin 可找到工具 -->
+  <Target Name="QtGenerate" BeforeTargets="ClCompile">
+    <MakeDir Directories="$(ProjectDir)moc" />
+    <Exec Command="&quot;$(QtDir)\bin\moc.exe&quot; &quot;$(ProjectDir)MainWindow.h&quot; -o &quot;$(ProjectDir)moc\moc_MainWindow.cpp&quot; -DUNICODE -D_UNICODE" />
+    <Exec Command="&quot;$(QtDir)\bin\moc.exe&quot; &quot;$(ProjectDir)ConvertWorker.h&quot; -o &quot;$(ProjectDir)moc\moc_ConvertWorker.cpp&quot; -DUNICODE -D_UNICODE" />
+    <Exec Command="&quot;$(QtDir)\bin\rcc.exe&quot; &quot;$(ProjectDir)icons.qrc&quot; -o &quot;$(ProjectDir)moc\qrc_icons.cpp&quot; --name icons" />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

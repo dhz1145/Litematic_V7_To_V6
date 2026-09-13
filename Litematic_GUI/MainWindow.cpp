@@ -3,27 +3,109 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
-#include <QClipboard>
 #include <QColor>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
-#include <QHeaderView>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
 #include <QMimeData>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QThread>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QStyle>
+
+namespace
+{
+
+// 自绘圆角弹出菜单：避开 QMenu 在 Windows 上边框直角/裁切问题
+class FileListContextMenu : public QDialog
+{
+public:
+	explicit FileListContextMenu(QWidget *parent = nullptr)
+		: QDialog(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint)
+	{
+		setModal(true);
+		setAttribute(Qt::WA_TranslucentBackground, true);
+
+		auto *lay = new QVBoxLayout(this);
+		lay->setContentsMargins(6, 6, 6, 6);
+		lay->setSpacing(0);
+
+		m_remove = new QPushButton(QStringLiteral("从列表移除"), this);
+		m_remove->setObjectName("menuRemoveBtn");
+		m_remove->setCursor(Qt::PointingHandCursor);
+		m_remove->setFocus();
+		m_remove->setFixedHeight(28);
+		lay->addWidget(m_remove);
+
+		setStyleSheet(QStringLiteral(R"(
+#menuRemoveBtn {
+	background-color: transparent;
+	color: #e6e8eb;
+	border: none;
+	border-radius: 5px;
+	padding: 2px 8px 2px 8px;
+	text-align: left;
+	font-size: 13px;
+	min-width: 0px;
+	max-width: 140px;
+}
+#menuRemoveBtn:hover {
+	background-color: #3d5a40;
+}
+#menuRemoveBtn:pressed {
+	background-color: #356a3f;
+}
+)"));
+
+		connect(m_remove, &QPushButton::clicked, this, &QDialog::accept);
+		adjustSize();
+	}
+
+	QSize sizeHint() const override
+	{
+		return QSize(112, 40);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *event) override
+	{
+		Q_UNUSED(event);
+		QPainter p(this);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+		p.setPen(QPen(QColor(0x2e, 0x34, 0x40), 1.0));
+		p.setBrush(QColor(0x1f, 0x23, 0x2b));
+		p.drawRoundedRect(frame, 8.0, 8.0);
+	}
+
+	void keyPressEvent(QKeyEvent *event) override
+	{
+		if (event->key() == Qt::Key_Escape)
+		{
+			reject();
+			return;
+		}
+		QDialog::keyPressEvent(event);
+	}
+
+private:
+	QPushButton *m_remove = nullptr;
+};
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
 	: QMainWindow(parent)
@@ -57,6 +139,7 @@ MainWindow::MainWindow(QWidget *parent)
 	m_list->setAlternatingRowColors(true);
 	m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
 	m_list->setUniformItemSizes(true);
+	m_list->setContextMenuPolicy(Qt::CustomContextMenu);
 	root->addWidget(m_list, 1);
 
 	auto *btnRow = new QHBoxLayout();
@@ -101,6 +184,7 @@ MainWindow::MainWindow(QWidget *parent)
 	connect(m_btnOpenOut, &QPushButton::clicked, this, &MainWindow::onOpenOutput);
 	connect(m_btnDetail, &QPushButton::clicked, this, &MainWindow::onShowFailureDetail);
 	connect(m_list, &QListWidget::itemDoubleClicked, this, &MainWindow::onItemDoubleClicked);
+	connect(m_list, &QListWidget::customContextMenuRequested, this, &MainWindow::onListCustomContextMenu);
 
 	m_thread = new QThread(this);
 	m_worker = new ConvertWorker();
@@ -303,6 +387,87 @@ void MainWindow::onOpenOutput()
 	}
 }
 
+void MainWindow::keyPressEvent(QKeyEvent *event)
+{
+	if (!m_busy && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace))
+	{
+		if (m_list && m_list->hasFocus())
+		{
+			onRemoveSelectedFiles();
+			event->accept();
+			return;
+		}
+	}
+	QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::onListCustomContextMenu(const QPoint &pos)
+{
+	if (m_busy || !m_list)
+	{
+		return;
+	}
+
+	QListWidgetItem *item = m_list->itemAt(pos);
+	if (item && !item->isSelected())
+	{
+		m_list->setCurrentItem(item);
+	}
+
+	if (m_list->selectedItems().isEmpty())
+	{
+		return;
+	}
+
+	FileListContextMenu menu(m_list);
+	menu.setWindowTitle(QStringLiteral("从列表移除"));
+	const QPoint global = m_list->viewport()->mapToGlobal(pos);
+	menu.move(global);
+	menu.show();
+	menu.raise();
+	if (menu.exec() == QDialog::Accepted)
+	{
+		onRemoveSelectedFiles();
+	}
+}
+
+void MainWindow::onRemoveSelectedFiles()
+{
+	if (m_busy || !m_list)
+	{
+		return;
+	}
+
+	const auto selected = m_list->selectedItems();
+	if (selected.isEmpty())
+	{
+		return;
+	}
+
+	int removed = 0;
+	for (QListWidgetItem *item : selected)
+	{
+		const QString path = item->data(Qt::UserRole).toString();
+		m_files.removeAll(path);
+		delete item;
+		++removed;
+	}
+
+	m_btnConvert->setEnabled(!m_files.isEmpty());
+	if (m_files.isEmpty())
+	{
+		m_progress->setRange(0, 1);
+		m_progress->setValue(0);
+		m_btnDetail->setEnabled(false);
+		m_status->setText(QStringLiteral("就绪 · 等待添加文件"));
+	}
+	else
+	{
+		m_status->setText(QStringLiteral("列表剩余 %1 个文件（已移除 %2 个）")
+			.arg(m_files.size()).arg(removed));
+	}
+}
+
 void MainWindow::onFileStarted(const QString &path, int index, int total)
 {
 	const QFileInfo info(path);
@@ -435,15 +600,6 @@ void MainWindow::onItemDoubleClicked(QListWidgetItem *item)
 			detail.isEmpty() ? QStringLiteral("（无）") : detail);
 
 	QMessageBox::warning(this, QStringLiteral("转换失败详情"), text);
-}
-
-QString MainWindow::failureReasonOf(QListWidgetItem *item) const
-{
-	if (!item)
-	{
-		return {};
-	}
-	return item->data(Qt::UserRole + 2).toString();
 }
 
 void MainWindow::appendLog(const QString &text)

@@ -137,8 +137,52 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
+  build-gui:
+    name: Build Qt GUI (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Qt 6 (MinGW)
+        run: |
+          python -m pip install aqtinstall
+          python -m aqt install-qt windows desktop 6.7.3 win64_mingw --outputdir C:\Qt --archives qtbase qttools
+          python -m aqt install-tool windows desktop tools_mingw1310 --outputdir C:\Qt
+
+      - name: Configure & Build GUI
+        shell: pwsh
+        run: |
+          $mingw = "C:\Qt\Tools\mingw1310_64\bin"
+          $qt = "C:\Qt\6.7.3\mingw_64"
+          $env:PATH = "$mingw;$($qt)\bin;$env:PATH"
+          cmake -S . -B build-gui -G Ninja `
+            -DCMAKE_MAKE_PROGRAM="$mingw\ninja.exe" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER="$mingw\gcc.exe" `
+            -DCMAKE_CXX_COMPILER="$mingw\g++.exe" `
+            -DCMAKE_PREFIX_PATH="$qt" `
+            -DBUILD_GUI=ON
+          cmake --build build-gui --target Litematic_GUI -j
+          & "$qt\bin\windeployqt.exe" --compiler-runtime --release "build-gui\Litematic_GUI\Litematic_GUI.exe"
+          New-Item -ItemType Directory -Force -Path dist-gui | Out-Null
+          Copy-Item -Recurse -Force "build-gui\Litematic_GUI\*" "dist-gui\"
+          Get-ChildItem "dist-gui" -Recurse -Directory | Where-Object { $_.Name -eq 'CMakeFiles' -or $_.Name -eq 'Litematic_GUI_autogen' } | Remove-Item -Recurse -Force
+          Get-ChildItem "dist-gui" -File | Where-Object { $_.Extension -in '.cmake','.txt','.ninja','.in' -or $_.Name -like 'build.ninja*' -or $_.Name -eq 'cmake_install.cmake' } | Remove-Item -Force
+
+      - name: Upload GUI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-gui-x64
+          path: dist-gui/
+          if-no-files-found: error
+
   release:
-   needs: build
+   needs: [build, build-gui]
    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
    runs-on: ubuntu-latest
    permissions:

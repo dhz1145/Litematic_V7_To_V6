@@ -369,6 +369,7 @@ NBT_Compare/*.txt
 
 # Local GUI build output
 build-gui/
+Litematic_GUI/moc/
 
 # CMakeLists
 !CMakeLists.txt

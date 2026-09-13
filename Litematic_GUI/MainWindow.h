@@ -10,6 +10,7 @@ class QPushButton;
 class QProgressBar;
 class QLabel;
 class QThread;
+class QKeyEvent;
 class ConvertWorker;
 
 class MainWindow : public QMainWindow
@@ -23,6 +24,7 @@ public:
 protected:
 	void dragEnterEvent(QDragEnterEvent *event) override;
 	void dropEvent(QDropEvent *event) override;
+	void keyPressEvent(QKeyEvent *event) override;
 
 private slots:
 	void onAddFiles();
@@ -31,6 +33,8 @@ private slots:
 	void onOpenOutput();
 	void onShowFailureDetail();
 	void onItemDoubleClicked(QListWidgetItem *item);
+	void onListCustomContextMenu(const QPoint &pos);
+	void onRemoveSelectedFiles();
 	void onFileStarted(const QString &path, int index, int total);
 	void onFileFinished(const QString &path, bool success, const QString &errorReason,
 		const QString &detailLog, qint64 elapsedMs);
@@ -41,7 +45,6 @@ private:
 	void addFiles(const QStringList &paths);
 	void setBusy(bool busy);
 	void applyStyle();
-	QString failureReasonOf(QListWidgetItem *item) const;
 
 	QListWidget *m_list = nullptr;
 	QPlainTextEdit *m_log = nullptr;

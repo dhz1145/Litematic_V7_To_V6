@@ -17,14 +17,12 @@ static std::filesystem::path GenerateUniqueFilename(const std::filesystem::path 
 {
 	while (u32TryCount != 0)
 	{
-		//时间用[]包围
-		auto name = stemPrefix.wstring();
-		name += L"[";
-		name += std::to_wstring(CodeTimer::GetSystemTime());
-		name += L"]";
-		name += extension.wstring();
+		// 时间用[]包围；用 path 拼接，兼容 Windows(wchar) 与 POSIX(char)
+		auto fileName = stemPrefix;
+		fileName += std::filesystem::path("[" + std::to_string(CodeTimer::GetSystemTime()) + "]");
+		fileName += extension;
 
-		auto tmpPath = dir / name;
+		auto tmpPath = dir / fileName;
 		if (!NBT_IO::IsFileExist(tmpPath))
 		{
 			return tmpPath;
@@ -157,7 +155,7 @@ LitematicConvertResult ConvertLitematicFile_V7_To_V6(const std::filesystem::path
 		{
 			const auto dir = sV7FilePath.parent_path();
 			auto stem = sV7FilePath.stem();
-			stem += L"_V6_";
+			stem += std::filesystem::path("_V6_");
 			sV6FilePath = GenerateUniqueFilename(dir, stem, sV7FilePath.extension());
 			if (sV6FilePath.empty())
 			{

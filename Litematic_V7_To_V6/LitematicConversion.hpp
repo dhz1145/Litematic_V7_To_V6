@@ -42,7 +42,7 @@ bool ConvertLitematicData_V7_To_V6(NBT_Type::Compound &cpdV7Input, NBT_Type::Com
 	//版本验证
 	if (pMinecraftDataVersion == NULL || *pMinecraftDataVersion <= V6_MINECRAFT_DATA_VERSION_END)// || (pVersion == NULL || *pVersion <= V6_LITEMATIC_VERSION)//投影版本检测去除，仅关注MC版本
 	{
-		strErrorMessage = "MinecraftDataVersion 无效（必须大于 " NUM_TO_STR(V6_MINECRAFT_DATA_VERSION_END) "，即 1.20.5+ 才需要降级）";
+		strErrorMessage = "不是需要降级的 V7 投影（仅支持 MC 1.20.5+ 的 V7 原理图）";
 		return false;
 	}
 
