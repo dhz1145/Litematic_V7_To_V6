@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>icons/grass_block.png</file>
+        <file>icons/grass_block.ico</file>
+    </qresource>
+</RCC>

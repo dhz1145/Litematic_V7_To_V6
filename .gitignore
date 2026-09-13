@@ -367,6 +367,9 @@ FodyWeavers.xsd
 NBT_Compare/*.txt
 **/other/
 
+# Local GUI build output
+build-gui/
+
 # CMakeLists
 !CMakeLists.txt
 !**/CMakeLists.txt

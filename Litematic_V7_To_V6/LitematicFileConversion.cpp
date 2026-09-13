@@ -1,19 +1,30 @@
-﻿#include "LitematicConversion.hpp"
+#include "LitematicConversion.hpp"
+#include "LitematicFileConversion.h"
 #include "util/CodeTimer.hpp"
 
+#include <filesystem>
 #include <stdio.h>
 #include <stdint.h>
 #include <vector>
 #include <unordered_map>
 #include <format>
 
-//找到一个唯一文件名
-std::string GenerateUniqueFilename(const std::string &sBeg, const std::string &sEnd, uint32_t u32TryCount = 10)//默认最多重试10次
+//找到一个唯一文件名（全程使用 filesystem::path，避免中文路径编码问题）
+static std::filesystem::path GenerateUniqueFilename(const std::filesystem::path &dir,
+	const std::filesystem::path &stemPrefix,
+	const std::filesystem::path &extension,
+	uint32_t u32TryCount = 10)//默认最多重试10次
 {
 	while (u32TryCount != 0)
 	{
 		//时间用[]包围
-		auto tmpPath = std::format("{}[{}]{}", sBeg, CodeTimer::GetSystemTime(), sEnd);//获取当前系统时间戳作为中间的部分
+		auto name = stemPrefix.wstring();
+		name += L"[";
+		name += std::to_wstring(CodeTimer::GetSystemTime());
+		name += L"]";
+		name += extension.wstring();
+
+		auto tmpPath = dir / name;
 		if (!NBT_IO::IsFileExist(tmpPath))
 		{
 			return tmpPath;
@@ -25,7 +36,7 @@ std::string GenerateUniqueFilename(const std::string &sBeg, const std::string &s
 	}
 
 	//次数到上限直接返回空
-	return std::string{};
+	return std::filesystem::path{};
 }
 
 struct MyCompoundSort
@@ -88,7 +99,13 @@ struct MyCompoundSort
 	}
 };
 
-bool ConvertLitematicFile_V7_To_V6(const std::string &sV7FilePath)
+static LitematicConvertResult Fail(std::string message)
+{
+	// 不再 printf：失败原因由调用方（CLI/GUI）按各自编码安全地展示
+	return LitematicConvertResult{false, std::move(message), {}};
+}
+
+LitematicConvertResult ConvertLitematicFile_V7_To_V6(const std::filesystem::path &sV7FilePath)
 {
 	NBT_Type::Compound cpdV7Input{};
 	NBT_Type::Compound cpdV6Output{};
@@ -98,22 +115,24 @@ bool ConvertLitematicFile_V7_To_V6(const std::string &sV7FilePath)
 		std::vector<uint8_t> vFileV7Stream{};
 		if (!NBT_IO::ReadFile(sV7FilePath, vFileV7Stream))
 		{
-			printf("Unable to read stream from file!\n");
-			return false;
+			return Fail("无法读取文件内容。请确认路径有效、文件未被占用，且是常规文件。");
 		}
 
 		//如果解压失败那么可能原先文件未压缩
 		std::vector<uint8_t> vDataV7Stream{};
-		if (!NBT_IO::DecompressDataNoThrow(vDataV7Stream, vFileV7Stream))
+		const bool bDecompressOk = NBT_IO::DecompressDataNoThrow(vDataV7Stream, vFileV7Stream);
+		if (!bDecompressOk)
 		{
-			printf("Data may not be compressed, attempt to parse directly.\n");
 			vDataV7Stream = std::move(vFileV7Stream);//尝试以未压缩流处理，而不是失败
 		}
 
 		if (!NBT_Reader::ReadNBT(vDataV7Stream, 0, cpdV7Input))
 		{
-			printf("Unable to parse data from stream!\n");
-			return false;
+			if (!bDecompressOk)
+			{
+				return Fail("无法解析 NBT 数据。文件可能未压缩且已损坏，或不是有效的 Litematica 投影文件。");
+			}
+			return Fail("无法解析 NBT 数据。文件可能已损坏，或不是有效的 Litematica 投影文件。");
 		}
 	}
 
@@ -121,8 +140,7 @@ bool ConvertLitematicFile_V7_To_V6(const std::string &sV7FilePath)
 	std::string strErrMsg;
 	if (!ConvertLitematicData_V7_To_V6(cpdV7Input, cpdV6Output, strErrMsg))
 	{
-		printf("Unable to convert v7_data to v6_data: [%s]\n", strErrMsg.c_str());
-		return false;
+		return Fail("版本数据转换失败：" + strErrMsg);
 	}
 
 	//写出cpdV6Output到文件sV6FilePath
@@ -131,27 +149,19 @@ bool ConvertLitematicFile_V7_To_V6(const std::string &sV7FilePath)
 		MyCompoundSort::Reset();
 		if (!NBT_Writer::WriteNBT<MyCompoundSort>(vDataV6Stream, 0, cpdV6Output))
 		{
-			printf("Unable to write data into stream!\n");
-			return false;
+			return Fail("无法把转换结果写入内存数据流。");
 		}
 
 		//查找合法文件
-		std::string sV6FilePath{};
+		std::filesystem::path sV6FilePath{};
 		{
-			//找到后缀名
-			size_t szPos = sV7FilePath.find_last_of('.');
-
-			//'.'前面的部分，不包含'.'
-			std::string sV7FileName = sV7FilePath.substr(0, szPos).append("_V6_");
-			//'.'后面的部分，包含'.'
-			std::string sV7FileExten = sV7FilePath.substr(szPos);
-
-			//唯一文件名
-			sV6FilePath = GenerateUniqueFilename(sV7FileName, sV7FileExten);
+			const auto dir = sV7FilePath.parent_path();
+			auto stem = sV7FilePath.stem();
+			stem += L"_V6_";
+			sV6FilePath = GenerateUniqueFilename(dir, stem, sV7FilePath.extension());
 			if (sV6FilePath.empty())
 			{
-				printf("Unable to find a valid file name or lack of permission!\n");
-				return false;
+				return Fail("无法生成可用的输出文件名。可能是目录权限不足，或同名结果文件过多。");
 			}
 		}
 
@@ -159,20 +169,15 @@ bool ConvertLitematicFile_V7_To_V6(const std::string &sV7FilePath)
 		std::vector<uint8_t> vFileV6Stream{};
 		if (!NBT_IO::CompressDataNoThrow(vFileV6Stream, vDataV6Stream))
 		{
-			printf("Unable to compress data stream!\n");
-			return false;
+			return Fail("无法压缩输出数据流。");
 		}
 
 		//写入数据
 		if (!NBT_IO::WriteFile(sV6FilePath, vFileV6Stream))
 		{
-			printf("Unable to write stream into file!\n");
-			return false;
+			return Fail("无法写入输出文件。请检查目录是否可写、磁盘空间是否充足。");
 		}
+
+		return LitematicConvertResult{true, {}, sV6FilePath};
 	}
-
-	printf("Convert Success!\n");
-	return true;
 }
-
-

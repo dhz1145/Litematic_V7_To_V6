@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "RegionConversion.hpp"
 
@@ -16,17 +16,17 @@ bool ConvertLitematicData_V7_To_V6(NBT_Type::Compound &cpdV7Input, NBT_Type::Com
 	if (cpdV7Input.Size() != 1)
 	{
 		strErrorMessage = cpdV7Input.Empty() ?
-			"Root node is missing! (expect exactly one)" :
-			"Root node is ambiguous! (expect exactly one)";
+			"根节点缺失（应恰好有一个）" :
+			"根节点不唯一（应恰好有一个）";
 		return false;
 	}
-	
+
 	//必须要是Compound
 	auto *pRoot = cpdV7Input.begin()->second.GetIfCompound();
 	const auto &strRootName = cpdV7Input.begin()->first;
 	if (pRoot == NULL)
 	{
-		strErrorMessage = "Root node is not a Compound type! (expected Compound)";
+		strErrorMessage = "根节点不是 Compound 类型";
 		return false;
 	}
 
@@ -42,7 +42,7 @@ bool ConvertLitematicData_V7_To_V6(NBT_Type::Compound &cpdV7Input, NBT_Type::Com
 	//版本验证
 	if (pMinecraftDataVersion == NULL || *pMinecraftDataVersion <= V6_MINECRAFT_DATA_VERSION_END)// || (pVersion == NULL || *pVersion <= V6_LITEMATIC_VERSION)//投影版本检测去除，仅关注MC版本
 	{
-		strErrorMessage = "MinecraftDataVersion Error! (must be > " NUM_TO_STR(V6_MINECRAFT_DATA_VERSION_END) ")";
+		strErrorMessage = "MinecraftDataVersion 无效（必须大于 " NUM_TO_STR(V6_MINECRAFT_DATA_VERSION_END) "，即 1.20.5+ 才需要降级）";
 		return false;
 	}
 
@@ -50,7 +50,7 @@ bool ConvertLitematicData_V7_To_V6(NBT_Type::Compound &cpdV7Input, NBT_Type::Com
 	auto *pMetadata = cpdV7DataRoot.HasCompound(MU8STR("Metadata"));
 	if (pMetadata == NULL)
 	{
-		strErrorMessage = "Metadata not found!";
+		strErrorMessage = "未找到 Metadata 字段";
 		return false;
 	}
 
@@ -66,7 +66,7 @@ bool ConvertLitematicData_V7_To_V6(NBT_Type::Compound &cpdV7Input, NBT_Type::Com
 	auto *pRegions = cpdV7DataRoot.HasCompound(MU8STR("Regions"));
 	if (pRegions == NULL)
 	{
-		strErrorMessage = "Regions not found!";
+		strErrorMessage = "未找到 Regions（选区）字段";
 		return false;
 	}
 
@@ -79,7 +79,7 @@ bool ConvertLitematicData_V7_To_V6(NBT_Type::Compound &cpdV7Input, NBT_Type::Com
 		auto &cpdNewV6RegionData = cpdV6Regions.PutCompound(sV7RegionName, {}).first->second.GetCompound();
 		if (!ProcessRegion(GetCompound(nodeV7RegionData), cpdNewV6RegionData, *pMinecraftDataVersion))
 		{
-			strErrorMessage = "ProcessRegion fail!";
+			strErrorMessage = "处理选区失败（Region 数据转换出错）";
 			return false;
 		}
 	}

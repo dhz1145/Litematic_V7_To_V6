@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <stdio.h>
 #include <stdint.h>
@@ -31,6 +31,21 @@ class NBT_IO
 	NBT_IO(void) = delete;
 	/// @brief 禁止析构
 	~NBT_IO(void) = delete;
+
+	/// @brief 将路径转为 UTF-8 窄字符串，供错误日志展示。
+	/// @details Windows 上 path::string() 可能是 ANSI/GBK，与 UTF-8 日志混排会乱码。
+	static std::string PathDisplayUtf8(const std::filesystem::path &pathFileName)
+	{
+		try
+		{
+			const auto u8 = pathFileName.u8string();
+			return std::string(u8.begin(), u8.end());
+		}
+		catch (...)
+		{
+			return "<path>";
+		}
+	}
 
 public:
 	/// @brief 默认输入流类，用于从标准库容器中读取数据
@@ -316,7 +331,7 @@ public:
 			{
 				if (ec)
 				{
-					funcInfo(NBT_Print_Level::Err, "Error: Failed to check existence of [{}]: {}\n", pathFileName.string(), ec.message());
+					funcInfo(NBT_Print_Level::Err, "Error: Failed to check existence of [{}]: {}\n", PathDisplayUtf8(pathFileName), ec.message());
 					return false;
 				}
 				else
@@ -325,14 +340,14 @@ public:
 					bool bRegularFile = std::filesystem::is_regular_file(pathFileName, ec);
 					if (ec)
 					{
-						funcInfo(NBT_Print_Level::Err, "Error: Failed to check file type of [{}]: {}\n", pathFileName.string(), ec.message());
+						funcInfo(NBT_Print_Level::Err, "Error: Failed to check file type of [{}]: {}\n", PathDisplayUtf8(pathFileName), ec.message());
 						return false;
 					}
 
 					//不是普通文件，出错
 					if (!bRegularFile)
 					{
-						funcInfo(NBT_Print_Level::Err, "Error: [{}] exists but is not a regular file.\n", pathFileName.string());
+						funcInfo(NBT_Print_Level::Err, "Error: [{}] exists but is not a regular file.\n", PathDisplayUtf8(pathFileName));
 						return false;
 					}
 				}
@@ -343,7 +358,7 @@ public:
 			fWrite.open(pathFileName, std::ios_base::binary | std::ios_base::out | std::ios_base::trunc);
 			if (!fWrite)
 			{
-				funcInfo(NBT_Print_Level::Err, "Error: Cannot open file [{}] for writing.\n", pathFileName.string());
+				funcInfo(NBT_Print_Level::Err, "Error: Cannot open file [{}] for writing.\n", PathDisplayUtf8(pathFileName));
 				return false;
 			}
 
@@ -351,7 +366,7 @@ public:
 			uint64_t qwFileSize = tData.size();
 			if (!fWrite.write((const char *)tData.data(), sizeof(tData[0]) * qwFileSize))
 			{
-				funcInfo(NBT_Print_Level::Err, "Error: Failed to write data to file [{}].\n", pathFileName.string());
+				funcInfo(NBT_Print_Level::Err, "Error: Failed to write data to file [{}].\n", PathDisplayUtf8(pathFileName));
 				return false;
 			}
 
@@ -399,11 +414,11 @@ public:
 			{
 				if (ec)
 				{
-					funcInfo(NBT_Print_Level::Err, "Error: Failed to check file type of [{}]: {}.\n", pathFileName.string(), ec.message());
+					funcInfo(NBT_Print_Level::Err, "Error: Failed to check file type of [{}]: {}.\n", PathDisplayUtf8(pathFileName), ec.message());
 				}
 				else
 				{
-					funcInfo(NBT_Print_Level::Err, "Error: [{}] is not a regular file.\n", pathFileName.string());
+					funcInfo(NBT_Print_Level::Err, "Error: [{}] is not a regular file.\n", PathDisplayUtf8(pathFileName));
 				}
 				return false;
 			}
@@ -414,11 +429,11 @@ public:
 			{
 				if (ec)
 				{
-					funcInfo(NBT_Print_Level::Err, "Error: Cannot get file size of [{}]: {}\n", pathFileName.string(), ec.message());
+					funcInfo(NBT_Print_Level::Err, "Error: Cannot get file size of [{}]: {}\n", PathDisplayUtf8(pathFileName), ec.message());
 				}
 				else
 				{
-					funcInfo(NBT_Print_Level::Err, "Error: File [{}](size: [{}] bytes) is too large to fit into memory(max: [{}] bytes).\n", pathFileName.string(), umFileSize, std::numeric_limits<size_t>::max());
+					funcInfo(NBT_Print_Level::Err, "Error: File [{}](size: [{}] bytes) is too large to fit into memory(max: [{}] bytes).\n", PathDisplayUtf8(pathFileName), umFileSize, std::numeric_limits<size_t>::max());
 				}
 				return false;
 			}
@@ -431,7 +446,7 @@ public:
 			fRead.open(pathFileName, std::ios_base::binary | std::ios_base::in);
 			if (!fRead)
 			{
-				funcInfo(NBT_Print_Level::Err, "Error: Cannot open file [{}] for reading.\n", pathFileName.string());
+				funcInfo(NBT_Print_Level::Err, "Error: Cannot open file [{}] for reading.\n", PathDisplayUtf8(pathFileName));
 				return false;
 			}
 
@@ -439,7 +454,7 @@ public:
 			tData.resize(szFileSize);//设置长度 c++23用resize_and_overwrite
 			if (!fRead.read((char *)tData.data(), sizeof(tData[0]) * szFileSize))//直接读入data
 			{
-				funcInfo(NBT_Print_Level::Err, "Error: Failed to read data from file [{}].\n", pathFileName.string());
+				funcInfo(NBT_Print_Level::Err, "Error: Failed to read data from file [{}].\n", PathDisplayUtf8(pathFileName));
 				return false;
 			}
 
