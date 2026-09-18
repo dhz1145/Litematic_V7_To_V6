@@ -28,6 +28,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace
 {
 
@@ -152,7 +154,7 @@ MainWindow::MainWindow(QWidget *parent)
 	m_btnPickOut->setToolTip(QStringLiteral("选择输出文件夹"));
 	m_btnPickOut->setFixedWidth(36);
 	m_btnPickOut->setFixedHeight(32);
-	const QIcon folderIcon(QStringLiteral(":/icons/folder_line.png"));
+	const QIcon folderIcon(QStringLiteral(":/icons/folder.png"));
 	m_btnPickOut->setIcon(folderIcon);
 	m_btnPickOut->setIconSize(QSize(18, 18));
 	m_btnResetOut = new QPushButton(QStringLiteral("恢复默认"), central);
@@ -358,6 +360,11 @@ QListWidget::item:selected {
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
+	if (m_busy)
+	{
+		event->ignore();
+		return;
+	}
 	if (event->mimeData()->hasUrls())
 	{
 		event->acceptProposedAction();
@@ -366,6 +373,12 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
+	// 转换中禁止拖入，避免列表与本轮任务不同步
+	if (m_busy)
+	{
+		event->ignore();
+		return;
+	}
 	QStringList paths;
 	const auto urls = event->mimeData()->urls();
 	for (const QUrl &url : urls)
@@ -384,6 +397,10 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::onAddFiles()
 {
+	if (m_busy)
+	{
+		return;
+	}
 	const QStringList paths = QFileDialog::getOpenFileNames(
 		this,
 		QStringLiteral("选择 Litematica 投影文件"),
@@ -464,6 +481,11 @@ void MainWindow::onChooseOutputDir()
 	m_customOutputDir = QDir(dir).absolutePath();
 	refreshOutputDirLabel();
 	m_status->setText(QStringLiteral("输出目录：%1").arg(m_customOutputDir));
+	// 已选定输出目录即可打开，不必等转换完成
+	if (QDir(m_customOutputDir).exists())
+	{
+		m_btnOpenOut->setEnabled(true);
+	}
 }
 
 void MainWindow::onResetOutputDir()
@@ -519,10 +541,17 @@ void MainWindow::onListCustomContextMenu(const QPoint &pos)
 	}
 
 	QListWidgetItem *item = m_list->itemAt(pos);
-	if (item && !item->isSelected())
+	// 右键空白：清空选中，不弹菜单
+	if (!item)
 	{
-		m_list->setCurrentItem(item);
+		m_list->clearSelection();
+		return;
 	}
+
+	// 右键项：强制选中该目标，避免 setCurrentItem 在多选下不生效
+	m_list->clearSelection();
+	item->setSelected(true);
+	m_list->setCurrentItem(item);
 
 	if (m_list->selectedItems().isEmpty())
 	{
@@ -533,8 +562,6 @@ void MainWindow::onListCustomContextMenu(const QPoint &pos)
 	menu.setWindowTitle(QStringLiteral("从列表移除"));
 	const QPoint global = m_list->viewport()->mapToGlobal(pos);
 	menu.move(global);
-	menu.show();
-	menu.raise();
 	if (menu.exec() == QDialog::Accepted)
 	{
 		onRemoveSelectedFiles();
@@ -558,7 +585,13 @@ void MainWindow::onRemoveSelectedFiles()
 	for (QListWidgetItem *item : selected)
 	{
 		const QString path = item->data(Qt::UserRole).toString();
-		m_files.removeAll(path);
+		for (int i = m_files.size() - 1; i >= 0; --i)
+		{
+			if (QString::compare(m_files.at(i), path, Qt::CaseInsensitive) == 0)
+			{
+				m_files.removeAt(i);
+			}
+		}
 		delete item;
 		++removed;
 	}
@@ -575,6 +608,18 @@ void MainWindow::onRemoveSelectedFiles()
 	{
 		m_status->setText(QStringLiteral("列表剩余 %1 个文件（已移除 %2 个）")
 			.arg(m_files.size()).arg(removed));
+		// 列表里可能已无失败项时，关闭「查看失败原因」
+		bool hasFail = false;
+		for (int i = 0; i < m_list->count(); ++i)
+		{
+			const QVariant st = m_list->item(i)->data(Qt::UserRole + 1);
+			if (st.isValid() && !st.toBool())
+			{
+				hasFail = true;
+				break;
+			}
+		}
+		m_btnDetail->setEnabled(hasFail);
 	}
 	updateActionButtons();
 }
@@ -648,7 +693,11 @@ void MainWindow::onFileFinished(const QString &path, bool success, const QString
 		}
 	}
 
-	m_btnDetail->setEnabled(true);
+	// 仅失败时启用「查看失败原因」
+	if (!success)
+	{
+		m_btnDetail->setEnabled(true);
+	}
 	m_progress->setValue(m_progress->value() + 1);
 }
 
@@ -657,9 +706,9 @@ void MainWindow::onAllFinished(int successCount, int failCount)
 	setBusy(false);
 	m_status->setText(QStringLiteral("完成 · 成功 %1 · 失败 %2").arg(successCount).arg(failCount));
 	appendLog(QStringLiteral("\n全部完成：成功 %1，失败 %2").arg(successCount).arg(failCount));
+	m_btnDetail->setEnabled(failCount > 0);
 	if (failCount > 0)
 	{
-		m_btnDetail->setEnabled(true);
 		appendLog(QStringLiteral("可点击「查看失败原因」或双击列表中的失败项查看详情。"));
 	}
 }
@@ -728,6 +777,10 @@ void MainWindow::appendLog(const QString &text)
 
 void MainWindow::addFiles(const QStringList &paths)
 {
+	if (m_busy)
+	{
+		return;
+	}
 	for (const QString &raw : paths)
 	{
 		const QFileInfo info(raw);
@@ -736,8 +789,13 @@ void MainWindow::addFiles(const QStringList &paths)
 			continue;
 		}
 
-		const QString path = info.absoluteFilePath();
-		if (m_files.contains(path))
+		const QString path = QDir::cleanPath(info.absoluteFilePath());
+		// Windows 路径不区分大小写，避免 E:\a 与 e:\a 重复
+		const bool exists = std::any_of(m_files.cbegin(), m_files.cend(),
+			[&path](const QString &p) {
+				return QString::compare(p, path, Qt::CaseInsensitive) == 0;
+			});
+		if (exists)
 		{
 			continue;
 		}
