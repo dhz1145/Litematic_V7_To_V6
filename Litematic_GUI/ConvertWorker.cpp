@@ -148,17 +148,20 @@ ConvertWorker::ConvertWorker(QObject *parent)
 {
 }
 
-ConvertWorker::RunOutcome ConvertWorker::runOne(const QString &path)
+ConvertWorker::RunOutcome ConvertWorker::runOne(const QString &path, const QString &outputDir)
 {
 	RunOutcome out;
 	const std::filesystem::path fsPath = std::filesystem::path(path.toStdWString());
+	const std::filesystem::path fsOut = outputDir.isEmpty()
+		? std::filesystem::path{}
+		: std::filesystem::path(outputDir.toStdWString());
 
 	const auto t0 = std::chrono::steady_clock::now();
 	LitematicConvertResult result{};
 	try
 	{
 		StdStreamCapture capture;
-		result = ConvertLitematicFile_V7_To_V6(fsPath);
+		result = ConvertLitematicFile_V7_To_V6(fsPath, fsOut);
 		out.detailLog = capture.takeLog();
 	}
 	catch (const std::exception &e)
@@ -175,22 +178,31 @@ ConvertWorker::RunOutcome ConvertWorker::runOne(const QString &path)
 	out.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 	out.ok = result.success;
 
+	QString outPath;
+	try
+	{
+		if (!result.outputPath.empty())
+		{
+			outPath = QString::fromStdWString(result.outputPath.wstring());
+		}
+	}
+	catch (...)
+	{
+	}
+
 	if (out.ok)
 	{
 		out.errorReason.clear();
+		const QString successLine = outPath.isEmpty()
+			? QStringLiteral("转换成功")
+			: QStringLiteral("转换成功\n输出：%1").arg(outPath);
 		if (out.detailLog.isEmpty())
 		{
-			QString outPath;
-			try
-			{
-				outPath = QString::fromStdWString(result.outputPath.wstring());
-			}
-			catch (...)
-			{
-			}
-			out.detailLog = outPath.isEmpty()
-				? QStringLiteral("转换成功")
-				: QStringLiteral("转换成功\n输出：%1").arg(outPath);
+			out.detailLog = successLine;
+		}
+		else
+		{
+			out.detailLog = successLine + QLatin1Char('\n') + out.detailLog;
 		}
 	}
 	else
@@ -208,7 +220,7 @@ ConvertWorker::RunOutcome ConvertWorker::runOne(const QString &path)
 	return out;
 }
 
-void ConvertWorker::convertFiles(const QStringList &files)
+void ConvertWorker::convertFiles(const QStringList &files, const QString &outputDir)
 {
 	int success = 0;
 	int fail = 0;
@@ -219,7 +231,7 @@ void ConvertWorker::convertFiles(const QStringList &files)
 		const QString &path = files.at(i);
 		emit fileStarted(path, i + 1, total);
 
-		const RunOutcome out = runOne(path);
+		const RunOutcome out = runOne(path, outputDir);
 		if (out.ok)
 		{
 			++success;

@@ -12,9 +12,11 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
+#include <QSize>
 #include <QMimeData>
 #include <QMessageBox>
 #include <QPainter>
@@ -124,7 +126,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 	auto *title = new QLabel(QStringLiteral("投影降级 · V7 (1.20.5+) → V6 (1.20.4-)"), central);
 	title->setObjectName("titleLabel");
-	auto *hint = new QLabel(QStringLiteral("拖入 .litematic 文件，或点击「添加文件」。输出保存在原文件同目录，不会覆盖源文件。"), central);
+	auto *hint = new QLabel(QStringLiteral("拖入 .litematic 文件，或点击「添加文件」。默认输出到源文件同目录；也可选择输出文件夹。不会覆盖源文件。"), central);
 	hint->setObjectName("hintLabel");
 	hint->setWordWrap(true);
 
@@ -141,6 +143,30 @@ MainWindow::MainWindow(QWidget *parent)
 	m_list->setUniformItemSizes(true);
 	m_list->setContextMenuPolicy(Qt::CustomContextMenu);
 	root->addWidget(m_list, 1);
+
+	// 输出目录行
+	auto *outRow = new QHBoxLayout();
+	outRow->setSpacing(8);
+	m_btnPickOut = new QPushButton(central);
+	m_btnPickOut->setObjectName("pickOutBtn");
+	m_btnPickOut->setToolTip(QStringLiteral("选择输出文件夹"));
+	m_btnPickOut->setFixedWidth(36);
+	m_btnPickOut->setFixedHeight(32);
+	const QIcon folderIcon(QStringLiteral(":/icons/folder_line.png"));
+	m_btnPickOut->setIcon(folderIcon);
+	m_btnPickOut->setIconSize(QSize(18, 18));
+	m_btnResetOut = new QPushButton(QStringLiteral("恢复默认"), central);
+	m_btnResetOut->setToolTip(QStringLiteral("输出到各源文件所在目录"));
+	m_btnResetOut->setEnabled(false);
+	m_outDirLabel = new QLabel(central);
+	m_outDirLabel->setObjectName("outDirLabel");
+	m_outDirLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	m_outDirLabel->setMinimumWidth(0);
+	refreshOutputDirLabel();
+	outRow->addWidget(m_btnPickOut);
+	outRow->addWidget(m_btnResetOut);
+	outRow->addWidget(m_outDirLabel, 1);
+	root->addLayout(outRow);
 
 	auto *btnRow = new QHBoxLayout();
 	btnRow->setSpacing(8);
@@ -183,6 +209,8 @@ MainWindow::MainWindow(QWidget *parent)
 	connect(m_btnConvert, &QPushButton::clicked, this, &MainWindow::onConvert);
 	connect(m_btnOpenOut, &QPushButton::clicked, this, &MainWindow::onOpenOutput);
 	connect(m_btnDetail, &QPushButton::clicked, this, &MainWindow::onShowFailureDetail);
+	connect(m_btnPickOut, &QPushButton::clicked, this, &MainWindow::onChooseOutputDir);
+	connect(m_btnResetOut, &QPushButton::clicked, this, &MainWindow::onResetOutputDir);
 	connect(m_list, &QListWidget::itemDoubleClicked, this, &MainWindow::onItemDoubleClicked);
 	connect(m_list, &QListWidget::customContextMenuRequested, this, &MainWindow::onListCustomContextMenu);
 
@@ -220,6 +248,26 @@ QMainWindow, QWidget {
 }
 #hintLabel {
 	color: #8b929e;
+}
+#outDirLabel {
+	color: #a8b0bc;
+	font-size: 12px;
+}
+#pickOutBtn {
+	background-color: #2a2f3a;
+	border: 1px solid #3a4250;
+	border-radius: 6px;
+	padding: 0px;
+}
+#pickOutBtn:hover {
+	background-color: #343b49;
+	border-color: #4a5566;
+}
+#pickOutBtn:pressed {
+	background-color: #232833;
+}
+#pickOutBtn:disabled {
+	opacity: 0.5;
 }
 #fileList, #logView {
 	background-color: #1f232b;
@@ -359,6 +407,8 @@ void MainWindow::onClear()
 	m_progress->setValue(0);
 	m_status->setText(QStringLiteral("就绪 · 等待添加文件"));
 	m_btnOpenOut->setEnabled(false);
+	m_btnDetail->setEnabled(false);
+	updateActionButtons();
 }
 
 void MainWindow::onConvert()
@@ -374,16 +424,76 @@ void MainWindow::onConvert()
 	m_progress->setValue(0);
 	m_status->setText(QStringLiteral("正在转换…"));
 	appendLog(QStringLiteral("开始转换 %1 个文件").arg(m_files.size()));
+	appendLog(m_customOutputDir.isEmpty()
+		? QStringLiteral("输出目录：源文件同目录")
+		: QStringLiteral("输出目录：%1").arg(m_customOutputDir));
 
 	QMetaObject::invokeMethod(m_worker, "convertFiles", Qt::QueuedConnection,
-		Q_ARG(QStringList, m_files));
+		Q_ARG(QStringList, m_files),
+		Q_ARG(QString, m_customOutputDir));
 }
 
 void MainWindow::onOpenOutput()
 {
-	if (!m_lastOutputDir.isEmpty() && QDir(m_lastOutputDir).exists())
+	QString dir = m_customOutputDir;
+	if (dir.isEmpty())
 	{
-		QDesktopServices::openUrl(QUrl::fromLocalFile(m_lastOutputDir));
+		dir = m_lastOutputDir;
+	}
+	if (!dir.isEmpty() && QDir(dir).exists())
+	{
+		QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+	}
+}
+
+void MainWindow::onChooseOutputDir()
+{
+	if (m_busy)
+	{
+		return;
+	}
+	const QString dir = QFileDialog::getExistingDirectory(
+		this,
+		QStringLiteral("选择输出文件夹"),
+		m_customOutputDir.isEmpty() ? m_lastOutputDir : m_customOutputDir,
+		QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+	if (dir.isEmpty())
+	{
+		return;
+	}
+	m_customOutputDir = QDir(dir).absolutePath();
+	refreshOutputDirLabel();
+	m_status->setText(QStringLiteral("输出目录：%1").arg(m_customOutputDir));
+}
+
+void MainWindow::onResetOutputDir()
+{
+	if (m_busy)
+	{
+		return;
+	}
+	m_customOutputDir.clear();
+	refreshOutputDirLabel();
+	m_status->setText(QStringLiteral("输出目录：源文件同目录"));
+}
+
+void MainWindow::refreshOutputDirLabel()
+{
+	if (!m_outDirLabel || !m_btnResetOut)
+	{
+		return;
+	}
+	if (m_customOutputDir.isEmpty())
+	{
+		m_outDirLabel->setText(QStringLiteral("输出目录：源文件同目录"));
+		m_outDirLabel->setToolTip(QStringLiteral("转换结果将保存到每个源文件所在文件夹"));
+		m_btnResetOut->setEnabled(false);
+	}
+	else
+	{
+		m_outDirLabel->setText(QStringLiteral("输出目录：%1").arg(m_customOutputDir));
+		m_outDirLabel->setToolTip(m_customOutputDir);
+		m_btnResetOut->setEnabled(true);
 	}
 }
 
@@ -453,12 +563,12 @@ void MainWindow::onRemoveSelectedFiles()
 		++removed;
 	}
 
-	m_btnConvert->setEnabled(!m_files.isEmpty());
 	if (m_files.isEmpty())
 	{
 		m_progress->setRange(0, 1);
 		m_progress->setValue(0);
 		m_btnDetail->setEnabled(false);
+		m_btnOpenOut->setEnabled(false);
 		m_status->setText(QStringLiteral("就绪 · 等待添加文件"));
 	}
 	else
@@ -466,6 +576,7 @@ void MainWindow::onRemoveSelectedFiles()
 		m_status->setText(QStringLiteral("列表剩余 %1 个文件（已移除 %2 个）")
 			.arg(m_files.size()).arg(removed));
 	}
+	updateActionButtons();
 }
 
 void MainWindow::onFileStarted(const QString &path, int index, int total)
@@ -479,7 +590,15 @@ void MainWindow::onFileFinished(const QString &path, bool success, const QString
 	const QString &detailLog, qint64 elapsedMs)
 {
 	const QFileInfo info(path);
-	m_lastOutputDir = info.absolutePath();
+	// 「打开输出目录」优先用自定义目录；否则用本次实际输出位置
+	if (m_customOutputDir.isEmpty())
+	{
+		m_lastOutputDir = info.absolutePath();
+	}
+	else
+	{
+		m_lastOutputDir = m_customOutputDir;
+	}
 	m_btnOpenOut->setEnabled(true);
 
 	if (success)
@@ -634,16 +753,32 @@ void MainWindow::addFiles(const QStringList &paths)
 	{
 		m_status->setText(QStringLiteral("已添加 %1 个文件").arg(m_files.size()));
 	}
+	// 移除后再添加时，必须重新启用「开始转换」
+	updateActionButtons();
+}
+
+void MainWindow::updateActionButtons()
+{
+	const bool hasFiles = !m_files.isEmpty();
+	m_btnAdd->setEnabled(!m_busy);
+	m_btnClear->setEnabled(!m_busy);
+	m_btnConvert->setEnabled(!m_busy && hasFiles);
+	if (m_btnPickOut)
+	{
+		m_btnPickOut->setEnabled(!m_busy);
+	}
+	if (m_btnResetOut)
+	{
+		m_btnResetOut->setEnabled(!m_busy && !m_customOutputDir.isEmpty());
+	}
 }
 
 void MainWindow::setBusy(bool busy)
 {
 	m_busy = busy;
-	m_btnAdd->setEnabled(!busy);
-	m_btnClear->setEnabled(!busy);
-	m_btnConvert->setEnabled(!busy && !m_files.isEmpty());
 	if (busy)
 	{
 		m_btnDetail->setEnabled(false);
 	}
+	updateActionButtons();
 }

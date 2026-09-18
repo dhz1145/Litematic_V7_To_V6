@@ -12,7 +12,8 @@ public:
 	explicit ConvertWorker(QObject *parent = nullptr);
 
 public slots:
-	void convertFiles(const QStringList &files);
+	// outputDir 为空：输出到各源文件同目录
+	void convertFiles(const QStringList &files, const QString &outputDir = QString());
 
 signals:
 	void fileStarted(const QString &path, int index, int total);
@@ -30,5 +31,5 @@ private:
 		qint64 elapsedMs = 0;
 	};
 
-	static RunOutcome runOne(const QString &path);
+	static RunOutcome runOne(const QString &path, const QString &outputDir);
 };

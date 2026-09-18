@@ -2,5 +2,6 @@
     <qresource prefix="/">
         <file>icons/grass_block.png</file>
         <file>icons/grass_block.ico</file>
+        <file>icons/folder_line.png</file>
     </qresource>
 </RCC>

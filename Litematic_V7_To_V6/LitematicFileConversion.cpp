@@ -103,7 +103,9 @@ static LitematicConvertResult Fail(std::string message)
 	return LitematicConvertResult{false, std::move(message), {}};
 }
 
-LitematicConvertResult ConvertLitematicFile_V7_To_V6(const std::filesystem::path &sV7FilePath)
+LitematicConvertResult ConvertLitematicFile_V7_To_V6(
+	const std::filesystem::path &sV7FilePath,
+	const std::filesystem::path &outputDir)
 {
 	NBT_Type::Compound cpdV7Input{};
 	NBT_Type::Compound cpdV6Output{};
@@ -150,10 +152,22 @@ LitematicConvertResult ConvertLitematicFile_V7_To_V6(const std::filesystem::path
 			return Fail("无法把转换结果写入内存数据流。");
 		}
 
+		//输出目录：指定目录优先，否则与源文件同目录
+		std::filesystem::path dir = sV7FilePath.parent_path();
+		if (!outputDir.empty())
+		{
+			dir = outputDir;
+			std::error_code ec;
+			std::filesystem::create_directories(dir, ec);
+			if (ec || !std::filesystem::is_directory(dir))
+			{
+				return Fail("输出目录无效或无法创建，请重新选择输出文件夹。");
+			}
+		}
+
 		//查找合法文件
 		std::filesystem::path sV6FilePath{};
 		{
-			const auto dir = sV7FilePath.parent_path();
 			auto stem = sV7FilePath.stem();
 			stem += std::filesystem::path("_V6_");
 			sV6FilePath = GenerateUniqueFilename(dir, stem, sV7FilePath.extension());

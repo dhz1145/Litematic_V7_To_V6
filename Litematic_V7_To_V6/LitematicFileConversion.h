@@ -12,5 +12,7 @@ struct LitematicConvertResult
 	std::filesystem::path outputPath;
 };
 
-// 接受原生路径（含中文），返回转换结果与失败原因
-LitematicConvertResult ConvertLitematicFile_V7_To_V6(const std::filesystem::path &sV7FilePath);
+// outputDir 为空：输出到源文件同目录；否则输出到指定目录
+LitematicConvertResult ConvertLitematicFile_V7_To_V6(
+	const std::filesystem::path &sV7FilePath,
+	const std::filesystem::path &outputDir = {});

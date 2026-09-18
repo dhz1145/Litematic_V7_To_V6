@@ -31,6 +31,8 @@ private slots:
 	void onClear();
 	void onConvert();
 	void onOpenOutput();
+	void onChooseOutputDir();
+	void onResetOutputDir();
 	void onShowFailureDetail();
 	void onItemDoubleClicked(QListWidgetItem *item);
 	void onListCustomContextMenu(const QPoint &pos);
@@ -45,6 +47,8 @@ private:
 	void addFiles(const QStringList &paths);
 	void setBusy(bool busy);
 	void applyStyle();
+	void updateActionButtons();
+	void refreshOutputDirLabel();
 
 	QListWidget *m_list = nullptr;
 	QPlainTextEdit *m_log = nullptr;
@@ -53,6 +57,9 @@ private:
 	QPushButton *m_btnConvert = nullptr;
 	QPushButton *m_btnOpenOut = nullptr;
 	QPushButton *m_btnDetail = nullptr;
+	QPushButton *m_btnPickOut = nullptr;
+	QPushButton *m_btnResetOut = nullptr;
+	QLabel *m_outDirLabel = nullptr;
 	QProgressBar *m_progress = nullptr;
 	QLabel *m_status = nullptr;
 
@@ -60,5 +67,6 @@ private:
 	ConvertWorker *m_worker = nullptr;
 	QStringList m_files;
 	QString m_lastOutputDir;
+	QString m_customOutputDir; // 空 = 源文件同目录
 	bool m_busy = false;
 };
