@@ -189,6 +189,7 @@ ConvertWorker::RunOutcome ConvertWorker::runOne(const QString &path, const QStri
 	catch (...)
 	{
 	}
+	out.outputPath = outPath;
 
 	if (out.ok)
 	{
@@ -241,7 +242,7 @@ void ConvertWorker::convertFiles(const QStringList &files, const QString &output
 			++fail;
 		}
 
-		emit fileFinished(path, out.ok, out.errorReason, out.detailLog, out.elapsedMs);
+		emit fileFinished(path, out.ok, out.errorReason, out.detailLog, out.elapsedMs, out.outputPath);
 	}
 
 	emit allFinished(success, fail);

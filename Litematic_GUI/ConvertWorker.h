@@ -18,8 +18,9 @@ public slots:
 signals:
 	void fileStarted(const QString &path, int index, int total);
 	// success 为 false 时，errorReason 为中文失败原因；detailLog 为完整日志
+	// outputPath 为成功时的 V6 输出路径，失败时为空
 	void fileFinished(const QString &path, bool success, const QString &errorReason,
-		const QString &detailLog, qint64 elapsedMs);
+		const QString &detailLog, qint64 elapsedMs, const QString &outputPath);
 	void allFinished(int successCount, int failCount);
 
 private:
@@ -28,6 +29,7 @@ private:
 		bool ok = false;
 		QString errorReason;
 		QString detailLog;
+		QString outputPath;
 		qint64 elapsedMs = 0;
 	};
 

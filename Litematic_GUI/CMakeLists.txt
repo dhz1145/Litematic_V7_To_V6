@@ -27,6 +27,7 @@ add_executable(Litematic_GUI WIN32
     MainWindow.h
     ConvertWorker.cpp
     ConvertWorker.h
+    ItemAlpha.hpp
     icons.qrc
     ${CONV_DIR}/LitematicFileConversion.cpp
 )

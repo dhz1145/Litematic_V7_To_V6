@@ -1,14 +1,17 @@
 #include "MainWindow.h"
 #include "ConvertWorker.h"
+#include "ItemAlpha.hpp"
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -24,6 +27,9 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QThread>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -138,13 +144,54 @@ MainWindow::MainWindow(QWidget *parent)
 	header->addWidget(hint);
 	root->addLayout(header);
 
+	// 文件列表 (左 2/3) + ItemList 面板 (右 1/3，默认隐藏)
+	auto *listRow = new QHBoxLayout();
+	listRow->setSpacing(8);
+
 	m_list = new QListWidget(central);
 	m_list->setObjectName("fileList");
 	m_list->setAlternatingRowColors(true);
 	m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
 	m_list->setUniformItemSizes(true);
 	m_list->setContextMenuPolicy(Qt::CustomContextMenu);
-	root->addWidget(m_list, 1);
+
+	m_itemListPanel = new QWidget(central);
+	m_itemListPanel->setObjectName("itemListPanel");
+	m_itemListPanel->setAcceptDrops(true);
+	m_itemListPanel->setMinimumWidth(200);
+	auto *panelLay = new QVBoxLayout(m_itemListPanel);
+	panelLay->setContentsMargins(10, 10, 10, 10);
+	panelLay->setSpacing(8);
+
+	auto *panelTitle = new QLabel(QStringLiteral("ItemList"), m_itemListPanel);
+	panelTitle->setObjectName("itemListTitle");
+	auto *panelHint = new QLabel(QStringLiteral("将 ItemList json 拖入此处，或点击下方按钮加载。\n转换后可对比投影中缺失的物品 id。"), m_itemListPanel);
+	panelHint->setObjectName("hintLabel");
+	panelHint->setWordWrap(true);
+
+	m_btnLoadItemList = new QPushButton(QStringLiteral("加载 ItemList"), m_itemListPanel);
+	m_btnLoadItemList->setToolTip(QStringLiteral("加载模组创造物品栏 id 列表 json"));
+	m_btnShowDiff = new QPushButton(QStringLiteral("查看缺失对比"), m_itemListPanel);
+	m_btnShowDiff->setEnabled(false);
+	m_btnShowDiff->setToolTip(QStringLiteral("显示投影中存在但 ItemList 中没有的物品 id"));
+	m_itemListLabel = new QLabel(QStringLiteral("ItemList：未加载"), m_itemListPanel);
+	m_itemListLabel->setObjectName("outDirLabel");
+	m_itemListLabel->setWordWrap(true);
+	m_itemListLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+	panelLay->addWidget(panelTitle);
+	panelLay->addWidget(panelHint);
+	panelLay->addWidget(m_btnLoadItemList);
+	panelLay->addWidget(m_btnShowDiff);
+	panelLay->addWidget(m_itemListLabel);
+	panelLay->addStretch(1);
+
+	m_itemListPanel->setVisible(false);
+	m_itemListPanel->installEventFilter(this);
+
+	listRow->addWidget(m_list, 2);
+	listRow->addWidget(m_itemListPanel, 1);
+	root->addLayout(listRow, 1);
 
 	// 输出目录行
 	auto *outRow = new QHBoxLayout();
@@ -174,6 +221,8 @@ MainWindow::MainWindow(QWidget *parent)
 	btnRow->setSpacing(8);
 	m_btnAdd = new QPushButton(QStringLiteral("添加文件"), central);
 	m_btnClear = new QPushButton(QStringLiteral("清空列表"), central);
+	m_chkItemList = new QCheckBox(QStringLiteral("ItemList"), central);
+	m_chkItemList->setToolTip(QStringLiteral("勾选后显示右侧 ItemList 区域"));
 	m_btnConvert = new QPushButton(QStringLiteral("开始转换"), central);
 	m_btnConvert->setObjectName("primaryBtn");
 	m_btnDetail = new QPushButton(QStringLiteral("查看失败原因"), central);
@@ -182,6 +231,7 @@ MainWindow::MainWindow(QWidget *parent)
 	m_btnOpenOut->setEnabled(false);
 	btnRow->addWidget(m_btnAdd);
 	btnRow->addWidget(m_btnClear);
+	btnRow->addWidget(m_chkItemList);
 	btnRow->addStretch(1);
 	btnRow->addWidget(m_btnDetail);
 	btnRow->addWidget(m_btnOpenOut);
@@ -213,6 +263,9 @@ MainWindow::MainWindow(QWidget *parent)
 	connect(m_btnDetail, &QPushButton::clicked, this, &MainWindow::onShowFailureDetail);
 	connect(m_btnPickOut, &QPushButton::clicked, this, &MainWindow::onChooseOutputDir);
 	connect(m_btnResetOut, &QPushButton::clicked, this, &MainWindow::onResetOutputDir);
+	connect(m_btnLoadItemList, &QPushButton::clicked, this, &MainWindow::onLoadItemList);
+	connect(m_btnShowDiff, &QPushButton::clicked, this, &MainWindow::onShowItemListDiff);
+	connect(m_chkItemList, &QCheckBox::toggled, this, &MainWindow::onToggleItemListPanel);
 	connect(m_list, &QListWidget::itemDoubleClicked, this, &MainWindow::onItemDoubleClicked);
 	connect(m_list, &QListWidget::customContextMenuRequested, this, &MainWindow::onListCustomContextMenu);
 
@@ -225,6 +278,26 @@ MainWindow::MainWindow(QWidget *parent)
 	connect(m_worker, &ConvertWorker::allFinished, this, &MainWindow::onAllFinished);
 	m_thread->start();
 
+	m_alpha = new AlphaItemSet();
+	{
+		QSettings settings(QStringLiteral("LitematicTools"), QStringLiteral("Litematic_V7_To_V6_GUI"));
+		const QString saved = settings.value(QStringLiteral("alphaPath")).toString();
+		if (!saved.isEmpty() && QFileInfo::exists(saved))
+		{
+			QString err;
+			if (LoadAlphaFile(saved, *m_alpha, err))
+			{
+				appendLog(QStringLiteral("已加载 ItemList：%1（%2 个 id）")
+					.arg(saved).arg(m_alpha->ids.size()));
+			}
+			else
+			{
+				m_itemListError = err;
+			}
+		}
+	}
+	refreshItemListLabel();
+
 	applyStyle();
 }
 
@@ -232,6 +305,8 @@ MainWindow::~MainWindow()
 {
 	m_thread->quit();
 	m_thread->wait();
+	delete m_alpha;
+	m_alpha = nullptr;
 }
 
 void MainWindow::applyStyle()
@@ -254,6 +329,34 @@ QMainWindow, QWidget {
 #outDirLabel {
 	color: #a8b0bc;
 	font-size: 12px;
+}
+#itemListPanel {
+	background-color: #1f232b;
+	border: 1px solid #2e3440;
+	border-radius: 6px;
+}
+#itemListTitle {
+	font-size: 14px;
+	font-weight: 600;
+	color: #f2f4f7;
+}
+QCheckBox {
+	color: #e6e8eb;
+	spacing: 6px;
+}
+QCheckBox::indicator {
+	width: 12px;
+	height: 12px;
+	border-radius: 2px;
+}
+QCheckBox::indicator:unchecked {
+	background-color: #16191f;
+	border: 1.2px solid #ffffff;
+}
+QCheckBox::indicator:checked {
+	background-color: #ffffff;
+	border: 1.2px solid #ffffff;
+	image: url(:/icons/check_dark.png);
 }
 #pickOutBtn {
 	background-color: #2a2f3a;
@@ -358,6 +461,49 @@ QListWidget::item:selected {
 )"));
 }
 
+bool MainWindow::handleDroppedUrls(const QList<QUrl> &urls)
+{
+	QStringList schematics;
+	QStringList jsons;
+	for (const QUrl &url : urls)
+	{
+		if (!url.isLocalFile())
+		{
+			continue;
+		}
+		const QString path = QFileInfo(url.toLocalFile()).absoluteFilePath();
+		const QString suffix = QFileInfo(path).suffix().toLower();
+		if (suffix == QLatin1String("json"))
+		{
+			jsons << path;
+		}
+		else
+		{
+			schematics << path;
+		}
+	}
+
+	bool handled = false;
+	if (!jsons.isEmpty())
+	{
+		// 拖入 json → 加载为 ItemList（取第一个）
+		if (loadItemListFromPath(jsons.first()))
+		{
+			if (m_chkItemList && !m_chkItemList->isChecked())
+			{
+				m_chkItemList->setChecked(true);
+			}
+			handled = true;
+		}
+	}
+	if (!schematics.isEmpty())
+	{
+		addFiles(schematics);
+		handled = true;
+	}
+	return handled;
+}
+
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
 	if (m_busy)
@@ -373,26 +519,41 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
-	// 转换中禁止拖入，避免列表与本轮任务不同步
 	if (m_busy)
 	{
 		event->ignore();
 		return;
 	}
-	QStringList paths;
-	const auto urls = event->mimeData()->urls();
-	for (const QUrl &url : urls)
+	if (handleDroppedUrls(event->mimeData()->urls()))
 	{
-		if (url.isLocalFile())
-		{
-			paths << url.toLocalFile();
-		}
-	}
-	if (!paths.isEmpty())
-	{
-		addFiles(paths);
 		event->acceptProposedAction();
 	}
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+	if (watched == m_itemListPanel)
+	{
+		if (event->type() == QEvent::DragEnter)
+		{
+			auto *de = static_cast<QDragEnterEvent *>(event);
+			if (!m_busy && de->mimeData()->hasUrls())
+			{
+				de->acceptProposedAction();
+				return true;
+			}
+		}
+		else if (event->type() == QEvent::Drop)
+		{
+			auto *de = static_cast<QDropEvent *>(event);
+			if (!m_busy && handleDroppedUrls(de->mimeData()->urls()))
+			{
+				de->acceptProposedAction();
+				return true;
+			}
+		}
+	}
+	return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::onAddFiles()
@@ -632,7 +793,7 @@ void MainWindow::onFileStarted(const QString &path, int index, int total)
 }
 
 void MainWindow::onFileFinished(const QString &path, bool success, const QString &errorReason,
-	const QString &detailLog, qint64 elapsedMs)
+	const QString &detailLog, qint64 elapsedMs, const QString &outputPath)
 {
 	const QFileInfo info(path);
 	// 「打开输出目录」优先用自定义目录；否则用本次实际输出位置
@@ -648,6 +809,10 @@ void MainWindow::onFileFinished(const QString &path, bool success, const QString
 
 	if (success)
 	{
+		if (!outputPath.isEmpty())
+		{
+			m_lastV6Path = outputPath;
+		}
 		appendLog(QStringLiteral("结果：成功 · 用时 %1 ms").arg(elapsedMs));
 	}
 	else
@@ -711,6 +876,236 @@ void MainWindow::onAllFinished(int successCount, int failCount)
 	{
 		appendLog(QStringLiteral("可点击「查看失败原因」或双击列表中的失败项查看详情。"));
 	}
+
+	// 期1：已加载 ItemList 且本轮有成功输出时，自动对比最后一个 V6
+	if (m_alpha && m_alpha->loaded() && successCount > 0 && !m_lastV6Path.isEmpty())
+	{
+		runItemListDiffOn(m_lastV6Path);
+	}
+}
+
+void MainWindow::onToggleItemListPanel(bool on)
+{
+	if (m_itemListPanel)
+	{
+		m_itemListPanel->setVisible(on);
+	}
+}
+
+bool MainWindow::loadItemListFromPath(const QString &path)
+{
+	AlphaItemSet loaded;
+	QString err;
+	if (!LoadAlphaFile(path, loaded, err))
+	{
+		m_itemListError = err;
+		refreshItemListLabel();
+		QMessageBox::warning(this, QStringLiteral("加载 ItemList 失败"), err);
+		return false;
+	}
+	if (m_alpha == nullptr)
+	{
+		m_alpha = new AlphaItemSet();
+	}
+	*m_alpha = loaded;
+	m_itemListError.clear();
+	refreshItemListLabel();
+
+	QSettings settings(QStringLiteral("LitematicTools"), QStringLiteral("Litematic_V7_To_V6_GUI"));
+	settings.setValue(QStringLiteral("alphaPath"), path);
+
+	appendLog(QStringLiteral("已加载 ItemList：%1（%2 个 id）").arg(path).arg(loaded.ids.size()));
+	m_status->setText(QStringLiteral("ItemList 已加载：%1 个物品 id").arg(loaded.ids.size()));
+	return true;
+}
+
+void MainWindow::onLoadItemList()
+{
+	if (m_busy)
+	{
+		return;
+	}
+	const QString startDir = (m_alpha && !m_alpha->path.isEmpty())
+		? QFileInfo(m_alpha->path).absolutePath()
+		: QString();
+	const QString path = QFileDialog::getOpenFileName(
+		this,
+		QStringLiteral("选择 ItemList json"),
+		startDir,
+		QStringLiteral("物品列表 (*.json);;所有文件 (*.*)"));
+	if (path.isEmpty())
+	{
+		return;
+	}
+	loadItemListFromPath(path);
+}
+
+void MainWindow::refreshItemListLabel()
+{
+	if (!m_itemListLabel || !m_btnShowDiff)
+	{
+		return;
+	}
+	if (m_alpha && m_alpha->loaded())
+	{
+		const QString name = QFileInfo(m_alpha->path).fileName();
+		m_itemListLabel->setText(QStringLiteral("ItemList：%1 · %2 个 id").arg(name).arg(m_alpha->ids.size()));
+		m_itemListLabel->setToolTip(m_alpha->path);
+		m_btnShowDiff->setEnabled(!m_lastDiffV6Path.isEmpty() || !m_lastV6Path.isEmpty());
+	}
+	else
+	{
+		m_itemListLabel->setText(m_itemListError.isEmpty()
+			? QStringLiteral("ItemList：未加载")
+			: QStringLiteral("ItemList：%1").arg(m_itemListError));
+		m_btnShowDiff->setEnabled(false);
+	}
+}
+
+void MainWindow::onShowItemListDiff()
+{
+	const QString target = !m_lastDiffV6Path.isEmpty() ? m_lastDiffV6Path : m_lastV6Path;
+	if (target.isEmpty())
+	{
+		QMessageBox::information(this, QStringLiteral("缺失对比"),
+			QStringLiteral("还没有可对比的 V6 文件，请先转换。"));
+		return;
+	}
+	if (m_alpha == nullptr || !m_alpha->loaded())
+	{
+		QMessageBox::information(this, QStringLiteral("缺失对比"),
+			QStringLiteral("请先加载 ItemList。"));
+		return;
+	}
+	if (target != m_lastDiffV6Path)
+	{
+		runItemListDiffOn(target);
+		return;
+	}
+
+	// 显示缓存结果
+	QDialog dlg(this);
+	dlg.setWindowTitle(QStringLiteral("缺失物品对比（ItemList）"));
+	dlg.resize(720, 480);
+	auto *lay = new QVBoxLayout(&dlg);
+	auto *info = new QLabel(m_lastDiffSummary, &dlg);
+	info->setWordWrap(true);
+	lay->addWidget(info);
+
+	auto *table = new QTableWidget(&dlg);
+	table->setColumnCount(2);
+	table->setHorizontalHeaderLabels({QStringLiteral("物品 id"), QStringLiteral("NBT 出现次数")});
+	table->horizontalHeader()->setStretchLastSection(true);
+	table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table->setSelectionBehavior(QAbstractItemView::SelectRows);
+	const int rows = m_lastDiffLines.size();
+	table->setRowCount(rows);
+	for (int i = 0; i < rows; ++i)
+	{
+		const QStringList parts = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
+		table->setItem(i, 0, new QTableWidgetItem(parts.value(0)));
+		table->setItem(i, 1, new QTableWidgetItem(parts.value(1)));
+	}
+	lay->addWidget(table, 1);
+
+	auto *btnClose = new QPushButton(QStringLiteral("关闭"), &dlg);
+	connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+	lay->addWidget(btnClose);
+	dlg.exec();
+}
+
+void MainWindow::runItemListDiffOn(const QString &v6Path)
+{
+	if (m_alpha == nullptr || !m_alpha->loaded())
+	{
+		return;
+	}
+	QHash<QString, int> counts;
+	QString err;
+	if (!CollectResourceIdsFromLitematic(v6Path, counts, err))
+	{
+		appendLog(QStringLiteral("ItemList 对比失败：%1").arg(err));
+		QMessageBox::warning(this, QStringLiteral("缺失对比失败"), err);
+		return;
+	}
+
+	const QVector<ResourceIdCount> missing = DiffMissingIds(counts, *m_alpha);
+	m_lastDiffV6Path = v6Path;
+	m_lastDiffTotalSchematicIds = counts.size();
+	m_lastDiffMissingCount = missing.size();
+	m_lastDiffLines.clear();
+	m_lastDiffLines.reserve(missing.size());
+	for (const ResourceIdCount &rc : missing)
+	{
+		m_lastDiffLines << (rc.id + QLatin1Char('\t') + QString::number(rc.count));
+	}
+
+	m_lastDiffSummary = QStringLiteral(
+		"对比文件：%1\nItemList：%2（%3 个 id）\n投影中扫描到 id 种类：%4\n"
+		"其中 ItemList 中没有（缺失）：%5 种\n"
+		"说明：「NBT 出现次数」是该 id 在投影 NBT 数据里出现的次数，不等于方块总数。")
+		.arg(v6Path,
+			QFileInfo(m_alpha->path).fileName(),
+			QString::number(m_alpha->ids.size()),
+			QString::number(m_lastDiffTotalSchematicIds),
+			QString::number(m_lastDiffMissingCount));
+
+	appendLog(QStringLiteral("ItemList 对比：%1 → 缺失 %2 种 id（投影共 %3 种）")
+		.arg(QFileInfo(v6Path).fileName())
+		.arg(m_lastDiffMissingCount)
+		.arg(m_lastDiffTotalSchematicIds));
+	if (!m_lastDiffLines.isEmpty())
+	{
+		const int show = static_cast<int>(std::min<qsizetype>(8, m_lastDiffLines.size()));
+		for (int i = 0; i < show; ++i)
+		{
+			const QStringList p = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
+			appendLog(QStringLiteral("  缺失：%1 ×%2").arg(p.value(0), p.value(1)));
+		}
+		if (m_lastDiffLines.size() > show)
+		{
+			appendLog(QStringLiteral("  … 共 %1 种，请点「查看缺失对比」看完整列表")
+				.arg(m_lastDiffLines.size()));
+		}
+	}
+	else
+	{
+		appendLog(QStringLiteral("投影中的 id 均在 ItemList 中。"));
+	}
+
+	m_btnShowDiff->setEnabled(true);
+	refreshItemListLabel();
+
+	QDialog dlg(this);
+	dlg.setWindowTitle(QStringLiteral("缺失物品对比（ItemList）"));
+	dlg.resize(720, 480);
+	auto *lay = new QVBoxLayout(&dlg);
+	auto *info = new QLabel(m_lastDiffSummary, &dlg);
+	info->setWordWrap(true);
+	lay->addWidget(info);
+
+	auto *table = new QTableWidget(&dlg);
+	table->setColumnCount(2);
+	table->setHorizontalHeaderLabels({QStringLiteral("物品 id"), QStringLiteral("NBT 出现次数")});
+	table->horizontalHeader()->setStretchLastSection(true);
+	table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table->setSelectionBehavior(QAbstractItemView::SelectRows);
+	const int rows = m_lastDiffLines.size();
+	table->setRowCount(rows);
+	for (int i = 0; i < rows; ++i)
+	{
+		const QStringList parts = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
+		table->setItem(i, 0, new QTableWidgetItem(parts.value(0)));
+		table->setItem(i, 1, new QTableWidgetItem(parts.value(1)));
+	}
+	lay->addWidget(table, 1);
+
+	auto *btnClose = new QPushButton(QStringLiteral("关闭"), &dlg);
+	connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+	lay->addWidget(btnClose);
+	dlg.exec();
 }
 
 void MainWindow::onShowFailureDetail()
@@ -828,6 +1223,10 @@ void MainWindow::updateActionButtons()
 	if (m_btnResetOut)
 	{
 		m_btnResetOut->setEnabled(!m_busy && !m_customOutputDir.isEmpty());
+	}
+	if (m_btnLoadItemList)
+	{
+		m_btnLoadItemList->setEnabled(!m_busy);
 	}
 }
 
