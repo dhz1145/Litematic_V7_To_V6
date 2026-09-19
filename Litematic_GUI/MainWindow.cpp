@@ -6,6 +6,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QColor>
+#include <QComboBox>
+#include <QCompleter>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
@@ -18,6 +20,7 @@
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QSize>
 #include <QMimeData>
@@ -28,6 +31,9 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
+#include <QStringListModel>
+#include <algorithm>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QThread>
@@ -440,17 +446,101 @@ QProgressBar::chunk {
 	border-radius: 5px;
 }
 QScrollBar:vertical {
-	background: #16191f;
+	background: #1a1d23;
 	width: 10px;
 	margin: 0;
+	border: none;
 }
 QScrollBar::handle:vertical {
 	background: #3a4250;
 	border-radius: 4px;
 	min-height: 24px;
+	margin: 2px;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-	height: 0;
+	height: 0px;
+	background: transparent;
+	border: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+	background: #1a1d23;
+	border: none;
+}
+QScrollBar:horizontal {
+	background: #1a1d23;
+	height: 10px;
+	margin: 0;
+	border: none;
+}
+QScrollBar::handle:horizontal {
+	background: #3a4250;
+	border-radius: 4px;
+	min-width: 24px;
+	margin: 2px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+	width: 0px;
+	background: transparent;
+	border: none;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+	background: #1a1d23;
+	border: none;
+}
+QTableWidget {
+	background-color: #1f232b;
+	border: 1px solid #2e3440;
+	gridline-color: #2e3440;
+	selection-background-color: #3d5a40;
+}
+QHeaderView::section {
+	background-color: #242830;
+	color: #c5cad3;
+	border: none;
+	border-right: 1px solid #2e3440;
+	border-bottom: 1px solid #2e3440;
+	padding: 4px;
+}
+QLineEdit {
+	background-color: #1f232b;
+	border: 1px solid #2e3440;
+	border-radius: 4px;
+	padding: 4px 6px;
+	color: #e6e8eb;
+}
+QComboBox {
+	background-color: #1f232b;
+	border: 1px solid #2e3440;
+	border-radius: 4px;
+	padding: 4px 28px 4px 8px;
+	color: #e6e8eb;
+	min-height: 20px;
+}
+QComboBox::drop-down {
+	subcontrol-origin: padding;
+	subcontrol-position: top right;
+	width: 26px;
+	border: none;
+	border-left: 1px solid #2e3440;
+	border-top-right-radius: 4px;
+	border-bottom-right-radius: 4px;
+	background: #242830;
+}
+QComboBox::down-arrow {
+	width: 0px;
+	height: 0px;
+	border-left: 5px solid transparent;
+	border-right: 5px solid transparent;
+	border-top: 6px solid #c8cdd6;
+	margin-right: 8px;
+}
+QComboBox QAbstractItemView, QCompleter QAbstractItemView {
+	background-color: #1f232b;
+	color: #e6e8eb;
+	border: 1px solid #2e3440;
+	selection-background-color: #3d5a40;
+	selection-color: #ffffff;
+	outline: none;
 }
 QListWidget::item {
 	padding: 6px 4px;
@@ -877,8 +967,9 @@ void MainWindow::onAllFinished(int successCount, int failCount)
 		appendLog(QStringLiteral("可点击「查看失败原因」或双击列表中的失败项查看详情。"));
 	}
 
-	// 期1：已加载 ItemList 且本轮有成功输出时，自动对比最后一个 V6
-	if (m_alpha && m_alpha->loaded() && successCount > 0 && !m_lastV6Path.isEmpty())
+	// 仅在勾选 ItemList 且已加载列表时才自动对比
+	if (m_chkItemList && m_chkItemList->isChecked() &&
+		m_alpha && m_alpha->loaded() && successCount > 0 && !m_lastV6Path.isEmpty())
 	{
 		runItemListDiffOn(m_lastV6Path);
 	}
@@ -977,42 +1068,12 @@ void MainWindow::onShowItemListDiff()
 			QStringLiteral("请先加载 ItemList。"));
 		return;
 	}
-	if (target != m_lastDiffV6Path)
+	if (target != m_lastDiffV6Path || m_lastAllCounts.isEmpty())
 	{
 		runItemListDiffOn(target);
 		return;
 	}
-
-	// 显示缓存结果
-	QDialog dlg(this);
-	dlg.setWindowTitle(QStringLiteral("缺失物品对比（ItemList）"));
-	dlg.resize(720, 480);
-	auto *lay = new QVBoxLayout(&dlg);
-	auto *info = new QLabel(m_lastDiffSummary, &dlg);
-	info->setWordWrap(true);
-	lay->addWidget(info);
-
-	auto *table = new QTableWidget(&dlg);
-	table->setColumnCount(2);
-	table->setHorizontalHeaderLabels({QStringLiteral("物品 id"), QStringLiteral("NBT 出现次数")});
-	table->horizontalHeader()->setStretchLastSection(true);
-	table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-	table->setSelectionBehavior(QAbstractItemView::SelectRows);
-	const int rows = m_lastDiffLines.size();
-	table->setRowCount(rows);
-	for (int i = 0; i < rows; ++i)
-	{
-		const QStringList parts = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
-		table->setItem(i, 0, new QTableWidgetItem(parts.value(0)));
-		table->setItem(i, 1, new QTableWidgetItem(parts.value(1)));
-	}
-	lay->addWidget(table, 1);
-
-	auto *btnClose = new QPushButton(QStringLiteral("关闭"), &dlg);
-	connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
-	lay->addWidget(btnClose);
-	dlg.exec();
+	showItemListReplaceDialog();
 }
 
 void MainWindow::runItemListDiffOn(const QString &v6Path)
@@ -1021,21 +1082,47 @@ void MainWindow::runItemListDiffOn(const QString &v6Path)
 	{
 		return;
 	}
-	QHash<QString, int> counts;
+	QHash<QString, SectionIdCounts> sectionCounts;
 	QString err;
-	if (!CollectResourceIdsFromLitematic(v6Path, counts, err))
+	if (!CollectResourceIdsFromLitematic(v6Path, sectionCounts, err))
 	{
 		appendLog(QStringLiteral("ItemList 对比失败：%1").arg(err));
 		QMessageBox::warning(this, QStringLiteral("缺失对比失败"), err);
 		return;
 	}
 
+	m_lastPaletteCounts.clear();
+	m_lastContainerCounts.clear();
+	m_lastEntityCounts.clear();
+	m_lastOtherCounts.clear();
+	for (auto it = sectionCounts.constBegin(); it != sectionCounts.constEnd(); ++it)
+	{
+		const SectionIdCounts &sc = it.value();
+		if (sc.palette > 0)
+		{
+			m_lastPaletteCounts.insert(it.key(), sc.palette);
+		}
+		if (sc.container > 0)
+		{
+			m_lastContainerCounts.insert(it.key(), sc.container);
+		}
+		if (sc.entity > 0)
+		{
+			m_lastEntityCounts.insert(it.key(), sc.entity);
+		}
+		if (sc.other > 0)
+		{
+			m_lastOtherCounts.insert(it.key(), sc.other);
+		}
+	}
+
+	const QHash<QString, int> counts = FlattenSectionCounts(sectionCounts, true, true, true);
 	const QVector<ResourceIdCount> missing = DiffMissingIds(counts, *m_alpha);
+	m_lastAllCounts = counts;
 	m_lastDiffV6Path = v6Path;
 	m_lastDiffTotalSchematicIds = counts.size();
 	m_lastDiffMissingCount = missing.size();
 	m_lastDiffLines.clear();
-	m_lastDiffLines.reserve(missing.size());
 	for (const ResourceIdCount &rc : missing)
 	{
 		m_lastDiffLines << (rc.id + QLatin1Char('\t') + QString::number(rc.count));
@@ -1044,7 +1131,8 @@ void MainWindow::runItemListDiffOn(const QString &v6Path)
 	m_lastDiffSummary = QStringLiteral(
 		"对比文件：%1\nItemList：%2（%3 个 id）\n投影中扫描到 id 种类：%4\n"
 		"其中 ItemList 中没有（缺失）：%5 种\n"
-		"说明：「NBT 出现次数」是该 id 在投影 NBT 数据里出现的次数，不等于方块总数。")
+		"列表与次数会随「调色板/容器/实体」勾选变化。\n"
+		"「NBT 出现次数」不等于建筑方块总数。")
 		.arg(v6Path,
 			QFileInfo(m_alpha->path).fileName(),
 			QString::number(m_alpha->ids.size()),
@@ -1055,56 +1143,308 @@ void MainWindow::runItemListDiffOn(const QString &v6Path)
 		.arg(QFileInfo(v6Path).fileName())
 		.arg(m_lastDiffMissingCount)
 		.arg(m_lastDiffTotalSchematicIds));
-	if (!m_lastDiffLines.isEmpty())
-	{
-		const int show = static_cast<int>(std::min<qsizetype>(8, m_lastDiffLines.size()));
-		for (int i = 0; i < show; ++i)
-		{
-			const QStringList p = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
-			appendLog(QStringLiteral("  缺失：%1 ×%2").arg(p.value(0), p.value(1)));
-		}
-		if (m_lastDiffLines.size() > show)
-		{
-			appendLog(QStringLiteral("  … 共 %1 种，请点「查看缺失对比」看完整列表")
-				.arg(m_lastDiffLines.size()));
-		}
-	}
-	else
-	{
-		appendLog(QStringLiteral("投影中的 id 均在 ItemList 中。"));
-	}
 
 	m_btnShowDiff->setEnabled(true);
 	refreshItemListLabel();
+	showItemListReplaceDialog();
+}
+
+void MainWindow::showItemListReplaceDialog()
+{
+	if (m_alpha == nullptr || !m_alpha->loaded())
+	{
+		return;
+	}
+	if (m_lastDiffV6Path.isEmpty() || m_lastAllCounts.isEmpty())
+	{
+		return;
+	}
 
 	QDialog dlg(this);
-	dlg.setWindowTitle(QStringLiteral("缺失物品对比（ItemList）"));
-	dlg.resize(720, 480);
+	dlg.setWindowTitle(QStringLiteral("物品对比 / 替换（ItemList）"));
+	dlg.resize(900, 580);
+	dlg.setStyleSheet(styleSheet());
 	auto *lay = new QVBoxLayout(&dlg);
+
 	auto *info = new QLabel(m_lastDiffSummary, &dlg);
 	info->setWordWrap(true);
 	lay->addWidget(info);
 
+	auto *optRow = new QHBoxLayout();
+	auto *chkShowAll = new QCheckBox(QStringLiteral("显示全部"), &dlg);
+	auto *chkPalette = new QCheckBox(QStringLiteral("调色板"), &dlg);
+	auto *chkContainer = new QCheckBox(QStringLiteral("容器"), &dlg);
+	auto *chkEntity = new QCheckBox(QStringLiteral("实体"), &dlg);
+	chkPalette->setChecked(true);
+	chkContainer->setChecked(true);
+	chkEntity->setChecked(true);
+	optRow->addWidget(chkShowAll);
+	optRow->addStretch(1);
+	optRow->addWidget(new QLabel(QStringLiteral("替换作用范围："), &dlg));
+	optRow->addWidget(chkPalette);
+	optRow->addWidget(chkContainer);
+	optRow->addWidget(chkEntity);
+	lay->addLayout(optRow);
+
 	auto *table = new QTableWidget(&dlg);
-	table->setColumnCount(2);
-	table->setHorizontalHeaderLabels({QStringLiteral("物品 id"), QStringLiteral("NBT 出现次数")});
-	table->horizontalHeader()->setStretchLastSection(true);
+	table->setColumnCount(3);
+	table->setHorizontalHeaderLabels({
+		QStringLiteral("物品 id"),
+		QStringLiteral("NBT 出现次数"),
+		QStringLiteral("替换为（ItemList）")});
 	table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+	table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
-	const int rows = m_lastDiffLines.size();
-	table->setRowCount(rows);
-	for (int i = 0; i < rows; ++i)
-	{
-		const QStringList parts = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
-		table->setItem(i, 0, new QTableWidgetItem(parts.value(0)));
-		table->setItem(i, 1, new QTableWidgetItem(parts.value(1)));
-	}
+	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	lay->addWidget(table, 1);
 
+	QSet<QString> missingSet;
+	for (const QString &line : m_lastDiffLines)
+	{
+		missingSet.insert(line.split(QLatin1Char('\t')).value(0));
+	}
+
+	auto *fullListModel = new QStringListModel(&dlg);
+	auto *filterListModel = new QStringListModel(&dlg);
+	fullListModel->setStringList(RankItemListSuggestions(m_alpha->ids, QString()));
+	filterListModel->setStringList(QStringList());
+	auto *completer = new QCompleter(filterListModel, &dlg);
+	completer->setCaseSensitivity(Qt::CaseInsensitive);
+	completer->setFilterMode(Qt::MatchContains);
+	completer->setCompletionMode(QCompleter::PopupCompletion);
+
+	auto rebuildTable = [&]() {
+		const bool showAll = chkShowAll->isChecked();
+		const bool usePal = chkPalette->isChecked();
+		const bool useCon = chkContainer->isChecked();
+		const bool useEnt = chkEntity->isChecked();
+		const bool useOther = usePal && useCon && useEnt;
+
+		QHash<QString, int> scoped;
+		auto addHash = [&](const QHash<QString, int> &src) {
+			for (auto it = src.constBegin(); it != src.constEnd(); ++it)
+			{
+				scoped[it.key()] += it.value();
+			}
+		};
+		if (usePal)
+		{
+			addHash(m_lastPaletteCounts);
+		}
+		if (useCon)
+		{
+			addHash(m_lastContainerCounts);
+		}
+		if (useEnt)
+		{
+			addHash(m_lastEntityCounts);
+		}
+		if (useOther)
+		{
+			addHash(m_lastOtherCounts);
+		}
+
+		QVector<ResourceIdCount> rows;
+		for (auto it = scoped.constBegin(); it != scoped.constEnd(); ++it)
+		{
+			if (it.value() <= 0)
+			{
+				continue;
+			}
+			if (!showAll && !missingSet.contains(it.key()))
+			{
+				continue;
+			}
+			rows.append(ResourceIdCount{it.key(), it.value()});
+		}
+		std::sort(rows.begin(), rows.end(),
+			[](const ResourceIdCount &a, const ResourceIdCount &b) {
+				if (a.count != b.count)
+				{
+					return a.count > b.count;
+				}
+				return a.id < b.id;
+			});
+
+		const bool updates = table->updatesEnabled();
+		table->setUpdatesEnabled(false);
+		table->setRowCount(rows.size());
+		for (int i = 0; i < rows.size(); ++i)
+		{
+			auto *idItem = new QTableWidgetItem(rows.at(i).id);
+			idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
+			table->setItem(i, 0, idItem);
+			auto *cntItem = new QTableWidgetItem(QString::number(rows.at(i).count));
+			cntItem->setFlags(cntItem->flags() & ~Qt::ItemIsEditable);
+			table->setItem(i, 1, cntItem);
+
+			auto *combo = new QComboBox(table);
+			combo->setEditable(true);
+			combo->setInsertPolicy(QComboBox::NoInsert);
+			combo->setModel(fullListModel);
+			combo->setCompleter(completer);
+			combo->blockSignals(true);
+			combo->setCurrentText(QString());
+			combo->blockSignals(false);
+			if (combo->lineEdit())
+			{
+				combo->lineEdit()->setPlaceholderText(QStringLiteral("输入或点箭头选择"));
+			}
+			combo->setProperty("srcId", rows.at(i).id);
+			if (combo->view())
+			{
+				combo->view()->setStyleSheet(QStringLiteral(
+					"QAbstractItemView { background:#1f232b; color:#e6e8eb; "
+					"border:1px solid #2e3440; selection-background-color:#3d5a40; "
+					"selection-color:#ffffff; outline:none; }"));
+			}
+			table->setCellWidget(i, 2, combo);
+
+			QObject::connect(combo, &QComboBox::editTextChanged, combo,
+				[filterListModel, this](const QString &text) {
+					if (m_alpha == nullptr)
+					{
+						return;
+					}
+					const QSignalBlocker blocker(filterListModel);
+					filterListModel->setStringList(RankItemListSuggestions(m_alpha->ids, text));
+				});
+		}
+		table->setUpdatesEnabled(updates);
+		table->viewport()->update();
+	};
+
+	rebuildTable();
+	QObject::connect(chkShowAll, &QCheckBox::toggled, &dlg, rebuildTable);
+	QObject::connect(chkPalette, &QCheckBox::toggled, &dlg, rebuildTable);
+	QObject::connect(chkContainer, &QCheckBox::toggled, &dlg, rebuildTable);
+	QObject::connect(chkEntity, &QCheckBox::toggled, &dlg, rebuildTable);
+
+	auto *btnRow = new QHBoxLayout();
+	auto *btnApply = new QPushButton(QStringLiteral("应用全部替换"), &dlg);
 	auto *btnClose = new QPushButton(QStringLiteral("关闭"), &dlg);
-	connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
-	lay->addWidget(btnClose);
+	btnRow->addStretch(1);
+	btnRow->addWidget(btnApply);
+	btnRow->addWidget(btnClose);
+	lay->addLayout(btnRow);
+
+	QObject::connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::reject);
+	QObject::connect(btnApply, &QPushButton::clicked, &dlg, [&]() {
+		if (m_busy)
+		{
+			QMessageBox::information(&dlg, QStringLiteral("应用替换"),
+				QStringLiteral("转换进行中，请稍后再应用替换。"));
+			return;
+		}
+		if (!chkPalette->isChecked() && !chkContainer->isChecked() && !chkEntity->isChecked())
+		{
+			QMessageBox::warning(&dlg, QStringLiteral("应用替换"),
+				QStringLiteral("请至少勾选一种替换作用范围。"));
+			return;
+		}
+
+		QHash<QString, QString> map;
+		for (int i = 0; i < table->rowCount(); ++i)
+		{
+			auto *combo = qobject_cast<QComboBox *>(table->cellWidget(i, 2));
+			if (combo == nullptr)
+			{
+				continue;
+			}
+			const QString src = combo->property("srcId").toString();
+			const QString dst = combo->currentText().trimmed();
+			if (src.isEmpty() || dst.isEmpty() || src == dst)
+			{
+				continue;
+			}
+			map.insert(src, dst);
+		}
+		if (map.isEmpty())
+		{
+			QMessageBox::information(&dlg, QStringLiteral("应用替换"),
+				QStringLiteral("还没有填写任何「替换为」目标。"));
+			return;
+		}
+
+		const QString scopeText = QStringLiteral("%1%2%3")
+			.arg(chkPalette->isChecked() ? QStringLiteral("调色板 ") : QString(),
+				chkContainer->isChecked() ? QStringLiteral("容器 ") : QString(),
+				chkEntity->isChecked() ? QStringLiteral("实体") : QString());
+		const QString confirm = QStringLiteral(
+			"将把 %1 条替换规则写回：\n\n%2\n\n"
+			"作用范围：%3\n\n"
+			"会直接覆盖该 V6 文件，且不可撤销。确定继续？")
+			.arg(map.size())
+			.arg(m_lastDiffV6Path, scopeText);
+		if (QMessageBox::question(&dlg, QStringLiteral("确认覆盖 V6 文件"), confirm,
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+		{
+			return;
+		}
+
+		QString err;
+		int changed = 0;
+		if (!ApplyIdReplacementsToLitematic(
+				m_lastDiffV6Path, map,
+				chkPalette->isChecked(), chkContainer->isChecked(), chkEntity->isChecked(),
+				err, changed))
+		{
+			QMessageBox::warning(&dlg, QStringLiteral("替换失败"), err);
+			appendLog(QStringLiteral("替换失败：%1").arg(err));
+			return;
+		}
+
+		appendLog(QStringLiteral("已应用替换：%1 处 · 规则 %2 条 · 文件 %3")
+			.arg(changed).arg(map.size()).arg(m_lastDiffV6Path));
+
+		QHash<QString, SectionIdCounts> sectionCounts;
+		QString err2;
+		if (CollectResourceIdsFromLitematic(m_lastDiffV6Path, sectionCounts, err2))
+		{
+			m_lastPaletteCounts.clear();
+			m_lastContainerCounts.clear();
+			m_lastEntityCounts.clear();
+			m_lastOtherCounts.clear();
+			for (auto it = sectionCounts.constBegin(); it != sectionCounts.constEnd(); ++it)
+			{
+				const SectionIdCounts &sc = it.value();
+				if (sc.palette > 0)
+				{
+					m_lastPaletteCounts.insert(it.key(), sc.palette);
+				}
+				if (sc.container > 0)
+				{
+					m_lastContainerCounts.insert(it.key(), sc.container);
+				}
+				if (sc.entity > 0)
+				{
+					m_lastEntityCounts.insert(it.key(), sc.entity);
+				}
+				if (sc.other > 0)
+				{
+					m_lastOtherCounts.insert(it.key(), sc.other);
+				}
+			}
+			m_lastAllCounts = FlattenSectionCounts(sectionCounts, true, true, true);
+			const QVector<ResourceIdCount> missing2 = DiffMissingIds(m_lastAllCounts, *m_alpha);
+			m_lastDiffTotalSchematicIds = m_lastAllCounts.size();
+			m_lastDiffMissingCount = missing2.size();
+			m_lastDiffLines.clear();
+			for (const ResourceIdCount &rc : missing2)
+			{
+				m_lastDiffLines << (rc.id + QLatin1Char('\t') + QString::number(rc.count));
+			}
+			refreshItemListLabel();
+			appendLog(QStringLiteral("替换后重新扫描：缺失 %1 种（投影共 %2 种）")
+				.arg(m_lastDiffMissingCount).arg(m_lastDiffTotalSchematicIds));
+		}
+
+		QMessageBox::information(&dlg, QStringLiteral("替换完成"),
+			QStringLiteral("已写回：%1\n替换位置约 %2 处").arg(m_lastDiffV6Path).arg(changed));
+		dlg.accept();
+	});
+
 	dlg.exec();
 }
 

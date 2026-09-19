@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QMainWindow>
 #include <QStringList>
 #include <QVector>
@@ -62,6 +63,7 @@ private:
 	void refreshItemListLabel();
 	bool loadItemListFromPath(const QString &path);
 	void runItemListDiffOn(const QString &v6Path);
+	void showItemListReplaceDialog();
 	bool handleDroppedUrls(const QList<QUrl> &urls);
 
 	QListWidget *m_list = nullptr;
@@ -95,6 +97,11 @@ private:
 	QString m_lastDiffV6Path;
 	QString m_lastDiffSummary;
 	QStringList m_lastDiffLines;
+	QHash<QString, int> m_lastAllCounts;
+	QHash<QString, int> m_lastPaletteCounts;
+	QHash<QString, int> m_lastContainerCounts;
+	QHash<QString, int> m_lastEntityCounts;
+	QHash<QString, int> m_lastOtherCounts;
 	int m_lastDiffTotalSchematicIds = 0;
 	int m_lastDiffMissingCount = 0;
 };
