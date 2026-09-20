@@ -4,5 +4,6 @@
         <file>icons/grass_block.ico</file>
         <file>icons/folder.png</file>
         <file>icons/check_dark.png</file>
+        <file>icons/chevron_down.png</file>
     </qresource>
 </RCC>

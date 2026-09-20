@@ -34,7 +34,9 @@
 #include <QSignalBlocker>
 #include <QStringListModel>
 #include <algorithm>
+#include <QStyledItemDelegate>
 #include <QTableWidget>
+#include <QTimer>
 #include <QHeaderView>
 #include <QThread>
 #include <QUrl>
@@ -527,12 +529,9 @@ QComboBox::drop-down {
 	background: #242830;
 }
 QComboBox::down-arrow {
-	width: 0px;
-	height: 0px;
-	border-left: 5px solid transparent;
-	border-right: 5px solid transparent;
-	border-top: 6px solid #c8cdd6;
-	margin-right: 8px;
+	image: url(:/icons/chevron_down.png);
+	width: 12px;
+	height: 12px;
 }
 QComboBox QAbstractItemView, QCompleter QAbstractItemView {
 	background-color: #1f232b;
@@ -1149,6 +1148,7 @@ void MainWindow::runItemListDiffOn(const QString &v6Path)
 	showItemListReplaceDialog();
 }
 
+
 void MainWindow::showItemListReplaceDialog()
 {
 	if (m_alpha == nullptr || !m_alpha->loaded())
@@ -1159,6 +1159,8 @@ void MainWindow::showItemListReplaceDialog()
 	{
 		return;
 	}
+
+	QHash<QString, QString> replaceTargets;
 
 	QDialog dlg(this);
 	dlg.setWindowTitle(QStringLiteral("物品对比 / 替换（ItemList）"));
@@ -1186,6 +1188,10 @@ void MainWindow::showItemListReplaceDialog()
 	optRow->addWidget(chkEntity);
 	lay->addLayout(optRow);
 
+	auto *hint = new QLabel(QStringLiteral("「替换为」：双击编辑；箭头从 ItemList 选择。勾选范围只会筛选行，不会重建控件。"), &dlg);
+	hint->setObjectName("hintLabel");
+	lay->addWidget(hint);
+
 	auto *table = new QTableWidget(&dlg);
 	table->setColumnCount(3);
 	table->setHorizontalHeaderLabels({
@@ -1196,8 +1202,73 @@ void MainWindow::showItemListReplaceDialog()
 	table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 	table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
-	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table->setEditTriggers(
+		QAbstractItemView::CurrentChanged | QAbstractItemView::EditKeyPressed);
+	table->setFocusPolicy(Qt::StrongFocus);
 	lay->addWidget(table, 1);
+
+	// 切回窗口时重置表格编辑状态，避免焦点卡住导致再点输入框无响应
+	{
+		class FocusResetFilter : public QObject
+		{
+		public:
+			explicit FocusResetFilter(QTableWidget *tw, QDialog *owner)
+				: QObject(owner), m_table(tw), m_dlg(owner)
+			{
+			}
+		protected:
+			bool eventFilter(QObject *watched, QEvent *event) override
+			{
+				if (watched == m_dlg && m_table &&
+					event->type() == QEvent::WindowActivate)
+				{
+					// 清空当前项以关闭可能卡住的编辑器（state() 为 protected，不可直接查）
+					const QModelIndex cur = m_table->currentIndex();
+					if (cur.isValid())
+					{
+						m_table->setCurrentIndex(QModelIndex());
+					}
+					if (m_dlg->isActiveWindow())
+					{
+						m_table->setFocus(Qt::OtherFocusReason);
+					}
+				}
+				return QObject::eventFilter(watched, event);
+			}
+		private:
+			QTableWidget *m_table = nullptr;
+			QDialog *m_dlg = nullptr;
+		};
+		auto *focusFilter = new FocusResetFilter(table, &dlg);
+		dlg.installEventFilter(focusFilter);
+		QObject::connect(&dlg, &QObject::destroyed, focusFilter, &QObject::deleteLater);
+	}
+
+	// 一次性汇总全部 id 及各区域次数
+	struct RowData
+	{
+		QString id;
+		int palette = 0;
+		int container = 0;
+		int entity = 0;
+		int other = 0;
+	};
+	QVector<RowData> allRows;
+	allRows.reserve(m_lastAllCounts.size());
+	for (auto it = m_lastAllCounts.constBegin(); it != m_lastAllCounts.constEnd(); ++it)
+	{
+		RowData rd;
+		rd.id = it.key();
+		rd.palette = m_lastPaletteCounts.value(it.key(), 0);
+		rd.container = m_lastContainerCounts.value(it.key(), 0);
+		rd.entity = m_lastEntityCounts.value(it.key(), 0);
+		rd.other = m_lastOtherCounts.value(it.key(), 0);
+		allRows.append(rd);
+	}
+	std::sort(allRows.begin(), allRows.end(),
+		[](const RowData &a, const RowData &b) {
+			return a.id < b.id;
+		});
 
 	QSet<QString> missingSet;
 	for (const QString &line : m_lastDiffLines)
@@ -1205,93 +1276,43 @@ void MainWindow::showItemListReplaceDialog()
 		missingSet.insert(line.split(QLatin1Char('\t')).value(0));
 	}
 
-	auto *fullListModel = new QStringListModel(&dlg);
-	auto *filterListModel = new QStringListModel(&dlg);
-	fullListModel->setStringList(RankItemListSuggestions(m_alpha->ids, QString()));
-	filterListModel->setStringList(QStringList());
-	auto *completer = new QCompleter(filterListModel, &dlg);
-	completer->setCaseSensitivity(Qt::CaseInsensitive);
-	completer->setFilterMode(Qt::MatchContains);
-	completer->setCompletionMode(QCompleter::PopupCompletion);
+	QStringList fullList = RankItemListSuggestions(m_alpha->ids, QString());
+	auto *fullListModel = new QStringListModel(fullList, &dlg);
 
-	auto rebuildTable = [&]() {
-		const bool showAll = chkShowAll->isChecked();
-		const bool usePal = chkPalette->isChecked();
-		const bool useCon = chkContainer->isChecked();
-		const bool useEnt = chkEntity->isChecked();
-		const bool useOther = usePal && useCon && useEnt;
-
-		QHash<QString, int> scoped;
-		auto addHash = [&](const QHash<QString, int> &src) {
-			for (auto it = src.constBegin(); it != src.constEnd(); ++it)
-			{
-				scoped[it.key()] += it.value();
-			}
-		};
-		if (usePal)
+	class ComboDelegate : public QStyledItemDelegate
+	{
+	public:
+		ComboDelegate(QStringListModel *fullModel, QSet<QString> *ids, QObject *parent = nullptr)
+			: QStyledItemDelegate(parent), m_fullModel(fullModel), m_ids(ids)
 		{
-			addHash(m_lastPaletteCounts);
 		}
-		if (useCon)
+		QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &,
+			const QModelIndex &) const override
 		{
-			addHash(m_lastContainerCounts);
-		}
-		if (useEnt)
-		{
-			addHash(m_lastEntityCounts);
-		}
-		if (useOther)
-		{
-			addHash(m_lastOtherCounts);
-		}
-
-		QVector<ResourceIdCount> rows;
-		for (auto it = scoped.constBegin(); it != scoped.constEnd(); ++it)
-		{
-			if (it.value() <= 0)
-			{
-				continue;
-			}
-			if (!showAll && !missingSet.contains(it.key()))
-			{
-				continue;
-			}
-			rows.append(ResourceIdCount{it.key(), it.value()});
-		}
-		std::sort(rows.begin(), rows.end(),
-			[](const ResourceIdCount &a, const ResourceIdCount &b) {
-				if (a.count != b.count)
-				{
-					return a.count > b.count;
-				}
-				return a.id < b.id;
-			});
-
-		const bool updates = table->updatesEnabled();
-		table->setUpdatesEnabled(false);
-		table->setRowCount(rows.size());
-		for (int i = 0; i < rows.size(); ++i)
-		{
-			auto *idItem = new QTableWidgetItem(rows.at(i).id);
-			idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
-			table->setItem(i, 0, idItem);
-			auto *cntItem = new QTableWidgetItem(QString::number(rows.at(i).count));
-			cntItem->setFlags(cntItem->flags() & ~Qt::ItemIsEditable);
-			table->setItem(i, 1, cntItem);
-
-			auto *combo = new QComboBox(table);
+			auto *combo = new QComboBox(parent);
 			combo->setEditable(true);
 			combo->setInsertPolicy(QComboBox::NoInsert);
-			combo->setModel(fullListModel);
-			combo->setCompleter(completer);
-			combo->blockSignals(true);
-			combo->setCurrentText(QString());
-			combo->blockSignals(false);
+			combo->setModel(m_fullModel);
+			if (m_ids)
+			{
+				auto *filterModel = new QStringListModel(combo);
+				auto *completer = new QCompleter(filterModel, combo);
+				completer->setCaseSensitivity(Qt::CaseInsensitive);
+				completer->setFilterMode(Qt::MatchContains);
+				completer->setCompletionMode(QCompleter::PopupCompletion);
+				combo->setCompleter(completer);
+				QObject::connect(combo, &QComboBox::editTextChanged, combo,
+					[filterModel, ids = m_ids](const QString &text) {
+						const QSignalBlocker blocker(filterModel);
+						filterModel->setStringList(RankItemListSuggestions(*ids, text));
+					});
+			}
+			combo->setFocusPolicy(Qt::StrongFocus);
 			if (combo->lineEdit())
 			{
+				combo->lineEdit()->setFocusPolicy(Qt::StrongFocus);
 				combo->lineEdit()->setPlaceholderText(QStringLiteral("输入或点箭头选择"));
 			}
-			combo->setProperty("srcId", rows.at(i).id);
 			if (combo->view())
 			{
 				combo->view()->setStyleSheet(QStringLiteral(
@@ -1299,27 +1320,128 @@ void MainWindow::showItemListReplaceDialog()
 					"border:1px solid #2e3440; selection-background-color:#3d5a40; "
 					"selection-color:#ffffff; outline:none; }"));
 			}
-			table->setCellWidget(i, 2, combo);
-
-			QObject::connect(combo, &QComboBox::editTextChanged, combo,
-				[filterListModel, this](const QString &text) {
-					if (m_alpha == nullptr)
-					{
-						return;
-					}
-					const QSignalBlocker blocker(filterListModel);
-					filterListModel->setStringList(RankItemListSuggestions(m_alpha->ids, text));
-				});
+			return combo;
 		}
-		table->setUpdatesEnabled(updates);
-		table->viewport()->update();
+		void setEditorData(QWidget *editor, const QModelIndex &index) const override
+		{
+			if (auto *combo = qobject_cast<QComboBox *>(editor))
+			{
+				combo->setCurrentText(index.data(Qt::EditRole).toString());
+				return;
+			}
+			QStyledItemDelegate::setEditorData(editor, index);
+		}
+		void setModelData(QWidget *editor, QAbstractItemModel *model,
+			const QModelIndex &index) const override
+		{
+			if (auto *combo = qobject_cast<QComboBox *>(editor))
+			{
+				model->setData(index, combo->currentText().trimmed(), Qt::EditRole);
+				return;
+			}
+			QStyledItemDelegate::setModelData(editor, model, index);
+		}
+	private:
+		QStringListModel *m_fullModel = nullptr;
+		QSet<QString> *m_ids = nullptr;
 	};
 
-	rebuildTable();
-	QObject::connect(chkShowAll, &QCheckBox::toggled, &dlg, rebuildTable);
-	QObject::connect(chkPalette, &QCheckBox::toggled, &dlg, rebuildTable);
-	QObject::connect(chkContainer, &QCheckBox::toggled, &dlg, rebuildTable);
-	QObject::connect(chkEntity, &QCheckBox::toggled, &dlg, rebuildTable);
+	table->setItemDelegateForColumn(2, new ComboDelegate(fullListModel, &m_alpha->ids, table));
+
+	bool building = false;
+
+	// 只建一次全部行
+	building = true;
+	table->setUpdatesEnabled(false);
+	table->blockSignals(true);
+	table->setRowCount(allRows.size());
+	for (int i = 0; i < allRows.size(); ++i)
+	{
+		auto *idItem = new QTableWidgetItem(allRows[i].id);
+		idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
+		table->setItem(i, 0, idItem);
+
+		auto *cntItem = new QTableWidgetItem(QStringLiteral("0"));
+		cntItem->setFlags(cntItem->flags() & ~Qt::ItemIsEditable);
+		table->setItem(i, 1, cntItem);
+
+		auto *replItem = new QTableWidgetItem(QString());
+		replItem->setFlags(replItem->flags() | Qt::ItemIsEditable);
+		replItem->setData(Qt::UserRole, allRows[i].id);
+		table->setItem(i, 2, replItem);
+	}
+	table->blockSignals(false);
+	table->setUpdatesEnabled(true);
+	building = false;
+
+	// 勾选时：只改次数 + 隐藏行，不 new 控件
+	auto applyFilter = [&]() {
+		const bool showAll = chkShowAll->isChecked();
+		const bool usePal = chkPalette->isChecked();
+		const bool useCon = chkContainer->isChecked();
+		const bool useEnt = chkEntity->isChecked();
+		const bool useOther = usePal && useCon && useEnt;
+
+		building = true;
+		const bool updates = table->updatesEnabled();
+		table->setUpdatesEnabled(false);
+		table->blockSignals(true);
+		for (int i = 0; i < allRows.size(); ++i)
+		{
+			const RowData &rd = allRows[i];
+			int n = 0;
+			if (usePal) n += rd.palette;
+			if (useCon) n += rd.container;
+			if (useEnt) n += rd.entity;
+			if (useOther) n += rd.other;
+
+			const bool visible = (n > 0) && (showAll || missingSet.contains(rd.id));
+			table->setRowHidden(i, !visible);
+			if (auto *cnt = table->item(i, 1))
+			{
+				cnt->setText(QString::number(n));
+			}
+		}
+		table->blockSignals(false);
+		table->setUpdatesEnabled(updates);
+		building = false;
+	};
+
+	// 防抖：连点勾选不会多次全表扫描卡死
+	auto *debounce = new QTimer(&dlg);
+	debounce->setSingleShot(true);
+	debounce->setInterval(80);
+	auto requestFilter = [&debounce]() {
+		debounce->start();
+	};
+	QObject::connect(debounce, &QTimer::timeout, &dlg, applyFilter);
+	QObject::connect(chkShowAll, &QCheckBox::toggled, &dlg, requestFilter);
+	QObject::connect(chkPalette, &QCheckBox::toggled, &dlg, requestFilter);
+	QObject::connect(chkContainer, &QCheckBox::toggled, &dlg, requestFilter);
+	QObject::connect(chkEntity, &QCheckBox::toggled, &dlg, requestFilter);
+	applyFilter();
+
+	QObject::connect(table, &QTableWidget::itemChanged, &dlg,
+		[&replaceTargets, &building](QTableWidgetItem *item) {
+			if (building || item == nullptr || item->column() != 2)
+			{
+				return;
+			}
+			const QString src = item->data(Qt::UserRole).toString();
+			const QString dst = item->text().trimmed();
+			if (src.isEmpty())
+			{
+				return;
+			}
+			if (dst.isEmpty() || dst == src)
+			{
+				replaceTargets.remove(src);
+			}
+			else
+			{
+				replaceTargets.insert(src, dst);
+			}
+		});
 
 	auto *btnRow = new QHBoxLayout();
 	auto *btnApply = new QPushButton(QStringLiteral("应用全部替换"), &dlg);
@@ -1343,22 +1465,13 @@ void MainWindow::showItemListReplaceDialog()
 				QStringLiteral("请至少勾选一种替换作用范围。"));
 			return;
 		}
-
 		QHash<QString, QString> map;
-		for (int i = 0; i < table->rowCount(); ++i)
+		for (auto it = replaceTargets.constBegin(); it != replaceTargets.constEnd(); ++it)
 		{
-			auto *combo = qobject_cast<QComboBox *>(table->cellWidget(i, 2));
-			if (combo == nullptr)
+			if (!it.value().isEmpty() && it.key() != it.value())
 			{
-				continue;
+				map.insert(it.key(), it.value());
 			}
-			const QString src = combo->property("srcId").toString();
-			const QString dst = combo->currentText().trimmed();
-			if (src.isEmpty() || dst.isEmpty() || src == dst)
-			{
-				continue;
-			}
-			map.insert(src, dst);
 		}
 		if (map.isEmpty())
 		{
@@ -1372,11 +1485,8 @@ void MainWindow::showItemListReplaceDialog()
 				chkContainer->isChecked() ? QStringLiteral("容器 ") : QString(),
 				chkEntity->isChecked() ? QStringLiteral("实体") : QString());
 		const QString confirm = QStringLiteral(
-			"将把 %1 条替换规则写回：\n\n%2\n\n"
-			"作用范围：%3\n\n"
-			"会直接覆盖该 V6 文件，且不可撤销。确定继续？")
-			.arg(map.size())
-			.arg(m_lastDiffV6Path, scopeText);
+			"将把 %1 条替换规则写回：\n\n%2\n\n作用范围：%3\n\n会直接覆盖该 V6 文件。确定继续？")
+			.arg(map.size()).arg(m_lastDiffV6Path, scopeText);
 		if (QMessageBox::question(&dlg, QStringLiteral("确认覆盖 V6 文件"), confirm,
 				QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
 		{
@@ -1394,52 +1504,8 @@ void MainWindow::showItemListReplaceDialog()
 			appendLog(QStringLiteral("替换失败：%1").arg(err));
 			return;
 		}
-
 		appendLog(QStringLiteral("已应用替换：%1 处 · 规则 %2 条 · 文件 %3")
 			.arg(changed).arg(map.size()).arg(m_lastDiffV6Path));
-
-		QHash<QString, SectionIdCounts> sectionCounts;
-		QString err2;
-		if (CollectResourceIdsFromLitematic(m_lastDiffV6Path, sectionCounts, err2))
-		{
-			m_lastPaletteCounts.clear();
-			m_lastContainerCounts.clear();
-			m_lastEntityCounts.clear();
-			m_lastOtherCounts.clear();
-			for (auto it = sectionCounts.constBegin(); it != sectionCounts.constEnd(); ++it)
-			{
-				const SectionIdCounts &sc = it.value();
-				if (sc.palette > 0)
-				{
-					m_lastPaletteCounts.insert(it.key(), sc.palette);
-				}
-				if (sc.container > 0)
-				{
-					m_lastContainerCounts.insert(it.key(), sc.container);
-				}
-				if (sc.entity > 0)
-				{
-					m_lastEntityCounts.insert(it.key(), sc.entity);
-				}
-				if (sc.other > 0)
-				{
-					m_lastOtherCounts.insert(it.key(), sc.other);
-				}
-			}
-			m_lastAllCounts = FlattenSectionCounts(sectionCounts, true, true, true);
-			const QVector<ResourceIdCount> missing2 = DiffMissingIds(m_lastAllCounts, *m_alpha);
-			m_lastDiffTotalSchematicIds = m_lastAllCounts.size();
-			m_lastDiffMissingCount = missing2.size();
-			m_lastDiffLines.clear();
-			for (const ResourceIdCount &rc : missing2)
-			{
-				m_lastDiffLines << (rc.id + QLatin1Char('\t') + QString::number(rc.count));
-			}
-			refreshItemListLabel();
-			appendLog(QStringLiteral("替换后重新扫描：缺失 %1 种（投影共 %2 种）")
-				.arg(m_lastDiffMissingCount).arg(m_lastDiffTotalSchematicIds));
-		}
-
 		QMessageBox::information(&dlg, QStringLiteral("替换完成"),
 			QStringLiteral("已写回：%1\n替换位置约 %2 处").arg(m_lastDiffV6Path).arg(changed));
 		dlg.accept();
