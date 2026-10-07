@@ -17,44 +17,115 @@
 
 #include <nbt_cpp/NBT_All.hpp>
 
+// ItemList 资源类别（itemlister/2）
+enum class IdKind : uint8_t
+{
+	Item = 0,
+	Block = 1,
+	BlockEntity = 2,
+	Entity = 3,
+	Fluid = 4,
+	Other = 5,
+	KindCount = 6,
+};
+
+inline const char *IdKindName(IdKind k)
+{
+	switch (k)
+	{
+	case IdKind::Item: return "物品";
+	case IdKind::Block: return "方块";
+	case IdKind::BlockEntity: return "方块实体";
+	case IdKind::Entity: return "实体";
+	case IdKind::Fluid: return "流体";
+	default: return "未知";
+	}
+}
+
+// itemlister/2：按类别的 id 集合
 struct AlphaItemSet
 {
 	QString path;
-	QSet<QString> ids;
-	bool loaded() const { return !ids.isEmpty(); }
+	QString format;      // 例如 itemlister/2
+	QVector<QSet<QString>> idsByKind; // 下标为 IdKind
+
+	AlphaItemSet()
+	{
+		idsByKind.resize(static_cast<int>(IdKind::KindCount));
+	}
+
+	bool loaded() const
+	{
+		for (const QSet<QString> &s : idsByKind)
+		{
+			if (!s.isEmpty())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	const QSet<QString> &idsOf(IdKind k) const
+	{
+		return idsByKind.at(static_cast<int>(k));
+	}
+
+	int totalCount() const
+	{
+		int n = 0;
+		for (const QSet<QString> &s : idsByKind)
+		{
+			n += s.size();
+		}
+		return n;
+	}
+
+	// 用于「替换为」下拉：某类别的全部候选
+	QSet<QString> allOf(IdKind k) const
+	{
+		return idsOf(k);
+	}
 };
 
 struct ResourceIdCount
 {
 	QString id;
 	int count = 0;
+	IdKind kind = IdKind::Item;
 };
 
+// 投影 NBT 中某 id 在各区域的次数
 struct SectionIdCounts
 {
-	int palette = 0;
-	int container = 0;
-	int entity = 0;
-	int other = 0;
+	int palette = 0;     // BlockStatePalette -> Block
+	int container = 0;   // TileEntities 内物品 / 容器 -> Item
+	int entity = 0;      // Entities 内物品 -> Item
+	int blockEntity = 0; // TileEntities[].Id -> BlockEntity
+	int entityType = 0;  // Entities[].Id -> Entity
+	int fluid = 0;       // PendingFluidTicks -> Fluid
+	int blockTick = 0;   // PendingBlockTicks -> Block
+	int other = 0;       // 其它位置的裸 id
 
-	int totalIn(bool doPalette, bool doContainer, bool doEntity) const
+	// 按类别取属于该类的总次数（不含 other）
+	int countOfKind(IdKind k) const
 	{
-		int n = 0;
-		if (doPalette) n += palette;
-		if (doContainer) n += container;
-		if (doEntity) n += entity;
-		// 与替换逻辑一致：三项全勾时才纳入「其它」
-		if (doPalette && doContainer && doEntity) n += other;
-		return n;
+		switch (k)
+		{
+		case IdKind::Item: return container + entity;
+		case IdKind::Block: return palette + blockTick;
+		case IdKind::BlockEntity: return blockEntity;
+		case IdKind::Entity: return entityType;
+		case IdKind::Fluid: return fluid;
+		case IdKind::Other: return other;
+		default: return 0;
+		}
 	}
-};
 
-enum class ReplaceSection : uint8_t
-{
-	Other = 0,
-	Palette = 1,
-	Container = 2,
-	Entity = 3,
+	int totalAll() const
+	{
+		return palette + container + entity + blockEntity + entityType + fluid + blockTick + other;
+	}
 };
 
 inline bool LooksLikeResourceId(const QString &s)
@@ -87,6 +158,7 @@ inline bool LooksLikeResourceId(const QString &s)
 	return true;
 }
 
+// 只支持 itemlister/2；五个数组分别可选，但至少要有 items
 inline bool LoadAlphaFile(const QString &path, AlphaItemSet &out, QString &errMsg)
 {
 	QFile f(path);
@@ -102,37 +174,70 @@ inline bool LoadAlphaFile(const QString &path, AlphaItemSet &out, QString &errMs
 	const QJsonDocument doc = QJsonDocument::fromJson(raw, &perr);
 	if (perr.error != QJsonParseError::NoError || !doc.isObject())
 	{
-		errMsg = QStringLiteral("ItemList JSON 解析失败");
+		errMsg = QStringLiteral("ItemList JSON 解析失败：%1").arg(perr.errorString());
 		return false;
 	}
-	const QJsonValue itemsVal = doc.object().value(QStringLiteral("items"));
-	if (!itemsVal.isArray())
+	const QJsonObject root = doc.object();
+	const QString fmt = root.value(QStringLiteral("format")).toString();
+	if (fmt != QLatin1String("itemlister/2"))
 	{
-		errMsg = QStringLiteral("ItemList JSON 缺少 items 数组");
+		errMsg = QStringLiteral("不支持的 ItemList 格式「%1」，需要 itemlister/2").arg(fmt);
 		return false;
 	}
-	QSet<QString> ids;
-	const QJsonArray arr = itemsVal.toArray();
-	ids.reserve(arr.size());
-	for (const QJsonValue &v : arr)
+
+	AlphaItemSet loaded;
+	loaded.path = path;
+	loaded.format = fmt;
+
+	struct Field
 	{
-		if (!v.isString())
+		const char *key;
+		IdKind kind;
+	};
+	const Field fields[] = {
+		{"items", IdKind::Item},
+		{"blocks", IdKind::Block},
+		{"blockEntities", IdKind::BlockEntity},
+		{"entities", IdKind::Entity},
+		{"fluids", IdKind::Fluid},
+	};
+
+	for (const Field &fd : fields)
+	{
+		const QJsonValue v = root.value(QString::fromLatin1(fd.key));
+		if (v.isUndefined() || v.isNull())
 		{
 			continue;
 		}
-		const QString id = v.toString().trimmed();
-		if (!id.isEmpty())
+		if (!v.isArray())
 		{
-			ids.insert(id);
+			errMsg = QStringLiteral("ItemList 字段 %1 不是数组").arg(QString::fromLatin1(fd.key));
+			return false;
+		}
+		QSet<QString> &set = loaded.idsByKind[static_cast<int>(fd.kind)];
+		const QJsonArray arr = v.toArray();
+		set.reserve(arr.size());
+		for (const QJsonValue &item : arr)
+		{
+			if (!item.isString())
+			{
+				continue;
+			}
+			const QString id = item.toString().trimmed();
+			if (!id.isEmpty())
+			{
+				set.insert(id);
+			}
 		}
 	}
-	if (ids.isEmpty())
+
+	if (!loaded.loaded())
 	{
-		errMsg = QStringLiteral("ItemList 中没有有效物品 id");
+		errMsg = QStringLiteral("ItemList 中没有有效 id");
 		return false;
 	}
-	out.path = path;
-	out.ids = ids;
+
+	out = loaded;
 	errMsg.clear();
 	return true;
 }
@@ -152,47 +257,178 @@ inline QString NbtStringToQ(const NBT_Type::String &s)
 	}
 }
 
-inline ReplaceSection SectionFromCompoundKey(const NBT_Type::String &key)
+// 各类别在 NBT 中的「容器键」→ 区域类型
+enum class ScanRegion : uint8_t
+{
+	Other,
+	Palette,          // BlockStatePalette -> Block
+	TileEntities,     // 条目 id -> BlockEntity；条目内物品 -> Item
+	Entities,         // 条目 id -> Entity；条目内物品 -> Item
+	TileEntityItem,   // TileEntities 内的物品栈条目
+	EntityItem,       // Entities 内的物品栈条目
+	BlockTicks,       // -> Block
+	FluidTicks,       // -> Fluid
+};
+
+inline ScanRegion RegionFromKey(const NBT_Type::String &key)
 {
 	const QString k = NbtStringToQ(key);
 	if (k == QLatin1String("BlockStatePalette"))
 	{
-		return ReplaceSection::Palette;
+		return ScanRegion::Palette;
 	}
-	if (k == QLatin1String("TileEntities") || k == QLatin1String("PendingBlockTicks") ||
-		k == QLatin1String("PendingFluidTicks"))
+	if (k == QLatin1String("TileEntities"))
 	{
-		return ReplaceSection::Container;
+		return ScanRegion::TileEntities;
 	}
 	if (k == QLatin1String("Entities"))
 	{
-		return ReplaceSection::Entity;
+		return ScanRegion::Entities;
 	}
-	return ReplaceSection::Other;
+	if (k == QLatin1String("PendingBlockTicks"))
+	{
+		return ScanRegion::BlockTicks;
+	}
+	if (k == QLatin1String("PendingFluidTicks"))
+	{
+		return ScanRegion::FluidTicks;
+	}
+	return ScanRegion::Other;
 }
 
-inline bool AssignNbtString(NBT_Node &node, const QString &utf8Text)
+// 该键名是否是「物品栈/物品列表」容器键
+inline bool IsItemContainerKey(const QString &k)
 {
-	auto *pStr = node.GetIfString();
-	if (pStr == nullptr)
+	return k == QLatin1String("Item") || k == QLatin1String("Items") ||
+		k == QLatin1String("Inventory") || k == QLatin1String("sherds") ||
+		k == QLatin1String("ArmorItems") || k == QLatin1String("HandItems") ||
+		k == QLatin1String("OffhandItem") || k == QLatin1String("SaddleItem");
+}
+
+// 该键名是否是「资源 id 字段」（大小写都算）
+inline bool IsIdKey(const QString &k)
+{
+	return k == QLatin1String("id") || k == QLatin1String("Id");
+}
+
+// 「条目」是方块实体/实体（有坐标），还是物品栈（有 Count/Slot）
+inline bool CompoundLooksLikeEntityOrBlockEntity(const NBT_Type::Compound &cpd)
+{
+	for (const auto &kv : cpd)
 	{
-		return false;
+		const QString k = NbtStringToQ(kv.first);
+		if (k == QLatin1String("x") || k == QLatin1String("y") || k == QLatin1String("z"))
+		{
+			return true;
+		}
 	}
-	try
+	return false;
+}
+
+inline bool CompoundLooksLikeItemStack(const NBT_Type::Compound &cpd)
+{
+	for (const auto &kv : cpd)
 	{
-		const QByteArray raw = utf8Text.toUtf8();
-		*pStr = NBT_Type::String(std::basic_string_view<char>(raw.constData(), static_cast<size_t>(raw.size())));
-		return true;
+		const QString k = NbtStringToQ(kv.first);
+		if (k == QLatin1String("Count") || k == QLatin1String("Slot") ||
+			k == QLatin1String("components") || k == QLatin1String("tag"))
+		{
+			return true;
+		}
 	}
-	catch (...)
+	return false;
+}
+
+// 在区域语义下记录一个字符串 id
+inline void RecordId(
+	const QString &id,
+	ScanRegion region,
+	const QString &parentKey,
+	QHash<QString, SectionIdCounts> &counts)
+{
+	if (!LooksLikeResourceId(id))
 	{
-		return false;
+		return;
+	}
+	SectionIdCounts &sc = counts[id];
+	switch (region)
+	{
+	case ScanRegion::Palette:
+		sc.palette += 1;
+		break;
+	case ScanRegion::BlockTicks:
+		if (parentKey == QLatin1String("block") || parentKey.isEmpty())
+		{
+			sc.blockTick += 1;
+		}
+		else
+		{
+			sc.other += 1;
+		}
+		break;
+	case ScanRegion::FluidTicks:
+		if (parentKey == QLatin1String("fluid") || parentKey.isEmpty())
+		{
+			sc.fluid += 1;
+		}
+		else
+		{
+			sc.other += 1;
+		}
+		break;
+	case ScanRegion::TileEntities:
+		if (IsIdKey(parentKey))
+		{
+			// 条目自身的 id -> 方块实体类型
+			sc.blockEntity += 1;
+		}
+		else if (IsItemContainerKey(parentKey))
+		{
+			// 方块实体内嵌物品列表（sherds / Items 等）-> 物品
+			sc.container += 1;
+		}
+		else
+		{
+			sc.other += 1;
+		}
+		break;
+	case ScanRegion::Entities:
+		if (IsIdKey(parentKey))
+		{
+			// 条目自身的 id -> 实体类型
+			sc.entityType += 1;
+		}
+		else if (IsItemContainerKey(parentKey))
+		{
+			sc.entity += 1;
+		}
+		else
+		{
+			sc.other += 1;
+		}
+		break;
+	case ScanRegion::TileEntityItem:
+	case ScanRegion::EntityItem:
+		// 物品栈 / 物品列表里的值 -> 物品
+		if (IsIdKey(parentKey) || IsItemContainerKey(parentKey) || parentKey.isEmpty())
+		{
+			sc.container += 1;
+		}
+		else
+		{
+			sc.other += 1;
+		}
+		break;
+	default:
+		sc.other += 1;
+		break;
 	}
 }
 
-inline void CollectIdsFromNodeSectioned(
+inline void ScanNode(
 	const NBT_Node &node,
-	ReplaceSection sec,
+	ScanRegion region,
+	const QString &parentKey,
 	QHash<QString, SectionIdCounts> &counts)
 {
 	const NBT_TAG tag = node.GetTag();
@@ -205,19 +441,7 @@ inline void CollectIdsFromNodeSectioned(
 		{
 			return;
 		}
-		const QString qs = NbtStringToQ(*pStr);
-		if (!LooksLikeResourceId(qs))
-		{
-			return;
-		}
-		SectionIdCounts &sc = counts[qs];
-		switch (sec)
-		{
-		case ReplaceSection::Palette: sc.palette += 1; break;
-		case ReplaceSection::Container: sc.container += 1; break;
-		case ReplaceSection::Entity: sc.entity += 1; break;
-		default: sc.other += 1; break;
-		}
+		RecordId(NbtStringToQ(*pStr), region, parentKey, counts);
 		return;
 	}
 	case NBT_TAG::List:
@@ -229,7 +453,7 @@ inline void CollectIdsFromNodeSectioned(
 		}
 		for (const auto &it : *pList)
 		{
-			CollectIdsFromNodeSectioned(it, sec, counts);
+			ScanNode(it, region, parentKey, counts);
 		}
 		return;
 	}
@@ -240,15 +464,50 @@ inline void CollectIdsFromNodeSectioned(
 		{
 			return;
 		}
+
+		// 条目级判别：Entities/TileEntities 下的条目可能是实体/方块实体，也可能是物品栈
+		ScanRegion selfRegion = region;
+		if (region == ScanRegion::TileEntities)
+		{
+			selfRegion = CompoundLooksLikeEntityOrBlockEntity(*pCpd)
+				? ScanRegion::TileEntities
+				: ScanRegion::TileEntityItem;
+		}
+		else if (region == ScanRegion::Entities)
+		{
+			selfRegion = CompoundLooksLikeEntityOrBlockEntity(*pCpd)
+				? ScanRegion::Entities
+				: ScanRegion::EntityItem;
+		}
+		else if (region == ScanRegion::TileEntityItem || region == ScanRegion::EntityItem)
+		{
+			// 物品栈条目的内嵌复合（如 components）仍是物品上下文
+			selfRegion = region;
+		}
+
 		for (const auto &kv : *pCpd)
 		{
-			ReplaceSection childSec = sec;
-			const ReplaceSection keySec = SectionFromCompoundKey(kv.first);
-			if (keySec != ReplaceSection::Other)
+			const QString key = NbtStringToQ(kv.first);
+			ScanRegion childRegion = selfRegion;
+			const ScanRegion keyRegion = RegionFromKey(kv.first);
+			if (keyRegion != ScanRegion::Other)
 			{
-				childSec = keySec;
+				childRegion = keyRegion;
 			}
-			CollectIdsFromNodeSectioned(kv.second, childSec, counts);
+			// 物品栈/物品列表容器键 -> 物品上下文
+			if (IsItemContainerKey(key) &&
+				(keyRegion == ScanRegion::Other))
+			{
+				if (selfRegion == ScanRegion::Entities || selfRegion == ScanRegion::EntityItem)
+				{
+					childRegion = ScanRegion::EntityItem;
+				}
+				else
+				{
+					childRegion = ScanRegion::TileEntityItem;
+				}
+			}
+			ScanNode(kv.second, childRegion, key, counts);
 		}
 		return;
 	}
@@ -284,7 +543,7 @@ inline bool CollectResourceIdsFromLitematic(
 	}
 	for (const auto &kv : root)
 	{
-		CollectIdsFromNodeSectioned(kv.second, ReplaceSection::Other, counts);
+		ScanNode(kv.second, ScanRegion::Other, QString(), counts);
 	}
 	if (counts.isEmpty())
 	{
@@ -294,44 +553,87 @@ inline bool CollectResourceIdsFromLitematic(
 	return true;
 }
 
-inline QHash<QString, int> FlattenSectionCounts(
-	const QHash<QString, SectionIdCounts> &sectionCounts,
-	bool doPalette = true,
-	bool doContainer = true,
-	bool doEntity = true)
+// 组合勾选后，某 id 归属的可用于比较的类别集合
+inline QVector<IdKind> ActiveKinds(bool doPaletteItem, bool doContainerItem, bool doEntityItem,
+	bool doBlockEntity, bool doEntityType, bool doFluid, bool doOther)
 {
-	QHash<QString, int> flat;
-	for (auto it = sectionCounts.constBegin(); it != sectionCounts.constEnd(); ++it)
+	QVector<IdKind> kinds;
+	// 方块类：调色板勾选即视为要看方块
+	if (doPaletteItem)
 	{
-		const int n = it.value().totalIn(doPalette, doContainer, doEntity);
-		if (n > 0)
-		{
-			flat.insert(it.key(), n);
-		}
+		kinds.append(IdKind::Block);
 	}
-	return flat;
+	// 物品类：容器 或 实体内物品 任一勾选
+	if (doContainerItem || doEntityItem)
+	{
+		kinds.append(IdKind::Item);
+	}
+	if (doBlockEntity)
+	{
+		kinds.append(IdKind::BlockEntity);
+	}
+	if (doEntityType)
+	{
+		kinds.append(IdKind::Entity);
+	}
+	if (doFluid)
+	{
+		kinds.append(IdKind::Fluid);
+	}
+	if (doOther)
+	{
+		kinds.append(IdKind::Other);
+	}
+	return kinds;
 }
 
-inline QVector<ResourceIdCount> DiffMissingIds(
-	const QHash<QString, int> &schematicCounts,
-	const AlphaItemSet &alpha)
+// 某 id 在投影中的有效次数（按勾选的类别）
+inline int ScopedCount(const SectionIdCounts &sc, const QVector<IdKind> &kinds)
 {
-	QVector<ResourceIdCount> missing;
-	for (auto it = schematicCounts.constBegin(); it != schematicCounts.constEnd(); ++it)
+	int n = 0;
+	for (IdKind k : kinds)
 	{
-		if (!alpha.ids.contains(it.key()))
+		n += sc.countOfKind(k);
+	}
+	return n;
+}
+
+// 判定缺失：该 id 所属的任一类别在 ItemList 中存在，即不算缺失
+inline bool IsMissingId(const QString &id, const QVector<IdKind> &kinds, const AlphaItemSet &list)
+{
+	bool anyKindHas = false;
+	bool anyKindChecked = false;
+	for (IdKind k : kinds)
+	{
+		anyKindChecked = true;
+		if (list.idsOf(k).contains(id))
 		{
-			missing.append(ResourceIdCount{it.key(), it.value()});
+			anyKindHas = true;
+			break;
 		}
 	}
-	std::sort(missing.begin(), missing.end(),
+	if (!anyKindChecked)
+	{
+		return false;
+	}
+	return !anyKindHas;
+}
+
+inline QVector<ResourceIdCount> SortCounts(const QVector<ResourceIdCount> &rows)
+{
+	QVector<ResourceIdCount> out = rows;
+	std::sort(out.begin(), out.end(),
 		[](const ResourceIdCount &a, const ResourceIdCount &b) {
-			if (a.count != b.count) return a.count > b.count;
+			if (a.count != b.count)
+			{
+				return a.count > b.count;
+			}
 			return a.id < b.id;
 		});
-	return missing;
+	return out;
 }
 
+// 补全排序：子串匹配 + 相关度（前缀 > 包含；更短优先；字典序）
 inline QStringList RankItemListSuggestions(const QSet<QString> &ids, const QString &query)
 {
 	const QString q = query.trimmed().toLower();
@@ -359,8 +661,14 @@ inline QStringList RankItemListSuggestions(const QSet<QString> &ids, const QStri
 			const QString bl = b.toLower();
 			const bool ap = al.startsWith(q);
 			const bool bp = bl.startsWith(q);
-			if (ap != bp) return ap;
-			if (al.size() != bl.size()) return al.size() < bl.size();
+			if (ap != bp)
+			{
+				return ap;
+			}
+			if (al.size() != bl.size())
+			{
+				return al.size() < bl.size();
+			}
 			return al < bl;
 		});
 	if (matched.size() > 300)
@@ -370,13 +678,34 @@ inline QStringList RankItemListSuggestions(const QSet<QString> &ids, const QStri
 	return matched;
 }
 
+inline bool AssignNbtString(NBT_Type::String &str, const QString &utf8Text)
+{
+	try
+	{
+		const QByteArray raw = utf8Text.toUtf8();
+		str = NBT_Type::String(std::basic_string_view<char>(raw.constData(), static_cast<size_t>(raw.size())));
+		return true;
+	}
+	catch (...)
+	{
+		return false;
+	}
+}
+
+// 替换：仅改与该 id 同类别的位置
 inline void ReplaceInNode(
 	NBT_Node &node,
-	ReplaceSection sec,
+	ScanRegion region,
+	const QString &parentKey,
 	const QHash<QString, QString> &map,
-	bool doPalette,
-	bool doContainer,
-	bool doEntity,
+	const QHash<QString, IdKind> &kinds,
+	bool doPaletteItem,
+	bool doContainerItem,
+	bool doEntityItem,
+	bool doBlockEntity,
+	bool doEntityType,
+	bool doFluid,
+	bool doOther,
 	int &changed)
 {
 	const NBT_TAG tag = node.GetTag();
@@ -384,7 +713,7 @@ inline void ReplaceInNode(
 	{
 	case NBT_TAG::String:
 	{
-		const auto *pStr = node.GetIfString();
+		auto *pStr = node.GetIfString();
 		if (pStr == nullptr)
 		{
 			return;
@@ -394,19 +723,57 @@ inline void ReplaceInNode(
 		{
 			return;
 		}
+		const IdKind kind = kinds.value(id, IdKind::Item);
 		bool allow = false;
-		switch (sec)
+		switch (region)
 		{
-		case ReplaceSection::Palette: allow = doPalette; break;
-		case ReplaceSection::Container: allow = doContainer; break;
-		case ReplaceSection::Entity: allow = doEntity; break;
-		default: allow = doPalette && doContainer && doEntity; break;
+		case ScanRegion::Palette:
+			allow = doPaletteItem && kind == IdKind::Block;
+			break;
+		case ScanRegion::BlockTicks:
+			allow = doPaletteItem && kind == IdKind::Block &&
+				(parentKey == QLatin1String("block") || parentKey.isEmpty());
+			break;
+		case ScanRegion::FluidTicks:
+			allow = doFluid && kind == IdKind::Fluid &&
+				(parentKey == QLatin1String("fluid") || parentKey.isEmpty());
+			break;
+		case ScanRegion::TileEntities:
+			if (IsIdKey(parentKey))
+			{
+				allow = doBlockEntity && kind == IdKind::BlockEntity;
+			}
+			else if (IsItemContainerKey(parentKey))
+			{
+				allow = doContainerItem && kind == IdKind::Item;
+			}
+			break;
+		case ScanRegion::Entities:
+			if (IsIdKey(parentKey))
+			{
+				allow = doEntityType && kind == IdKind::Entity;
+			}
+			else if (IsItemContainerKey(parentKey))
+			{
+				allow = doEntityItem && kind == IdKind::Item;
+			}
+			break;
+		case ScanRegion::TileEntityItem:
+			allow = doContainerItem && kind == IdKind::Item &&
+				(IsIdKey(parentKey) || IsItemContainerKey(parentKey) || parentKey.isEmpty());
+			break;
+		case ScanRegion::EntityItem:
+			allow = doEntityItem && kind == IdKind::Item &&
+				(IsIdKey(parentKey) || IsItemContainerKey(parentKey) || parentKey.isEmpty());
+			break;
+		case ScanRegion::Other:
+			allow = doOther && kind == IdKind::Other;
+			break;
+		default:
+			allow = false;
+			break;
 		}
-		if (!allow)
-		{
-			return;
-		}
-		if (AssignNbtString(*const_cast<NBT_Node *>(&node), map.value(id)))
+		if (allow && AssignNbtString(*const_cast<NBT_Type::String *>(pStr), map.value(id)))
 		{
 			++changed;
 		}
@@ -421,7 +788,9 @@ inline void ReplaceInNode(
 		}
 		for (auto &it : *pList)
 		{
-			ReplaceInNode(it, sec, map, doPalette, doContainer, doEntity, changed);
+			ReplaceInNode(it, region, parentKey, map, kinds,
+				doPaletteItem, doContainerItem, doEntityItem,
+				doBlockEntity, doEntityType, doFluid, doOther, changed);
 		}
 		return;
 	}
@@ -432,15 +801,42 @@ inline void ReplaceInNode(
 		{
 			return;
 		}
+		ScanRegion selfRegion = region;
+		if (region == ScanRegion::TileEntities)
+		{
+			selfRegion = CompoundLooksLikeEntityOrBlockEntity(*pCpd)
+				? ScanRegion::TileEntities
+				: ScanRegion::TileEntityItem;
+		}
+		else if (region == ScanRegion::Entities)
+		{
+			selfRegion = CompoundLooksLikeEntityOrBlockEntity(*pCpd)
+				? ScanRegion::Entities
+				: ScanRegion::EntityItem;
+		}
 		for (auto &kv : *pCpd)
 		{
-			ReplaceSection childSec = sec;
-			const ReplaceSection keySec = SectionFromCompoundKey(kv.first);
-			if (keySec != ReplaceSection::Other)
+			const QString key = NbtStringToQ(kv.first);
+			ScanRegion childRegion = selfRegion;
+			const ScanRegion keyRegion = RegionFromKey(kv.first);
+			if (keyRegion != ScanRegion::Other)
 			{
-				childSec = keySec;
+				childRegion = keyRegion;
 			}
-			ReplaceInNode(kv.second, childSec, map, doPalette, doContainer, doEntity, changed);
+			if (IsItemContainerKey(key) && keyRegion == ScanRegion::Other)
+			{
+				if (selfRegion == ScanRegion::Entities || selfRegion == ScanRegion::EntityItem)
+				{
+					childRegion = ScanRegion::EntityItem;
+				}
+				else
+				{
+					childRegion = ScanRegion::TileEntityItem;
+				}
+			}
+			ReplaceInNode(kv.second, childRegion, key, map, kinds,
+				doPaletteItem, doContainerItem, doEntityItem,
+				doBlockEntity, doEntityType, doFluid, doOther, changed);
 		}
 		return;
 	}
@@ -452,9 +848,14 @@ inline void ReplaceInNode(
 inline bool ApplyIdReplacementsToLitematic(
 	const QString &litematicPath,
 	const QHash<QString, QString> &replaceMap,
-	bool doPalette,
-	bool doContainer,
-	bool doEntity,
+	const QHash<QString, IdKind> &idKinds,
+	bool doPaletteItem,
+	bool doContainerItem,
+	bool doEntityItem,
+	bool doBlockEntity,
+	bool doEntityType,
+	bool doFluid,
+	bool doOther,
 	QString &errMsg,
 	int &changedCount)
 {
@@ -486,11 +887,13 @@ inline bool ApplyIdReplacementsToLitematic(
 
 	for (auto &kv : root)
 	{
-		ReplaceInNode(kv.second, ReplaceSection::Other, replaceMap, doPalette, doContainer, doEntity, changedCount);
+		ReplaceInNode(kv.second, ScanRegion::Other, QString(), replaceMap, idKinds,
+			doPaletteItem, doContainerItem, doEntityItem,
+			doBlockEntity, doEntityType, doFluid, doOther, changedCount);
 	}
 	if (changedCount == 0)
 	{
-		errMsg = QStringLiteral("未匹配到任何要替换的 id（检查作用范围或替换表）");
+		errMsg = QStringLiteral("未匹配到任何要替换的 id（检查类别勾选或替换表）");
 		return false;
 	}
 

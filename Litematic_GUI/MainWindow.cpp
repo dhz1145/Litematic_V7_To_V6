@@ -125,6 +125,9 @@ private:
 
 } // namespace
 
+// 最近一次扫描结果：id -> 各类别次数（供对比窗口复用）
+static QHash<QString, SectionIdCounts> g_lastSectionCounts;
+
 MainWindow::MainWindow(QWidget *parent)
 	: QMainWindow(parent)
 {
@@ -296,7 +299,7 @@ MainWindow::MainWindow(QWidget *parent)
 			if (LoadAlphaFile(saved, *m_alpha, err))
 			{
 				appendLog(QStringLiteral("已加载 ItemList：%1（%2 个 id）")
-					.arg(saved).arg(m_alpha->ids.size()));
+					.arg(saved).arg(m_alpha->totalCount()));
 			}
 			else
 			{
@@ -1004,8 +1007,8 @@ bool MainWindow::loadItemListFromPath(const QString &path)
 	QSettings settings(QStringLiteral("LitematicTools"), QStringLiteral("Litematic_V7_To_V6_GUI"));
 	settings.setValue(QStringLiteral("alphaPath"), path);
 
-	appendLog(QStringLiteral("已加载 ItemList：%1（%2 个 id）").arg(path).arg(loaded.ids.size()));
-	m_status->setText(QStringLiteral("ItemList 已加载：%1 个物品 id").arg(loaded.ids.size()));
+	appendLog(QStringLiteral("已加载 ItemList：%1（%2 个 id）").arg(path).arg(loaded.totalCount()));
+	m_status->setText(QStringLiteral("ItemList 已加载：%1 个 id").arg(loaded.totalCount()));
 	return true;
 }
 
@@ -1039,7 +1042,7 @@ void MainWindow::refreshItemListLabel()
 	if (m_alpha && m_alpha->loaded())
 	{
 		const QString name = QFileInfo(m_alpha->path).fileName();
-		m_itemListLabel->setText(QStringLiteral("ItemList：%1 · %2 个 id").arg(name).arg(m_alpha->ids.size()));
+		m_itemListLabel->setText(QStringLiteral("ItemList：%1 · %2 个 id").arg(name).arg(m_alpha->totalCount()));
 		m_itemListLabel->setToolTip(m_alpha->path);
 		m_btnShowDiff->setEnabled(!m_lastDiffV6Path.isEmpty() || !m_lastV6Path.isEmpty());
 	}
@@ -1067,7 +1070,7 @@ void MainWindow::onShowItemListDiff()
 			QStringLiteral("请先加载 ItemList。"));
 		return;
 	}
-	if (target != m_lastDiffV6Path || m_lastAllCounts.isEmpty())
+	if (target != m_lastDiffV6Path || g_lastSectionCounts.isEmpty())
 	{
 		runItemListDiffOn(target);
 		return;
@@ -1089,38 +1092,31 @@ void MainWindow::runItemListDiffOn(const QString &v6Path)
 		QMessageBox::warning(this, QStringLiteral("缺失对比失败"), err);
 		return;
 	}
+	g_lastSectionCounts = sectionCounts;
 
-	m_lastPaletteCounts.clear();
-	m_lastContainerCounts.clear();
-	m_lastEntityCounts.clear();
-	m_lastOtherCounts.clear();
+	// 默认口径：五类全看
+	const QVector<IdKind> kinds = ActiveKinds(true, true, true, true, true, true, true);
+	int missingCount = 0;
+	QVector<ResourceIdCount> missing;
 	for (auto it = sectionCounts.constBegin(); it != sectionCounts.constEnd(); ++it)
 	{
-		const SectionIdCounts &sc = it.value();
-		if (sc.palette > 0)
+		const int n = ScopedCount(it.value(), kinds);
+		if (n <= 0)
 		{
-			m_lastPaletteCounts.insert(it.key(), sc.palette);
+			continue;
 		}
-		if (sc.container > 0)
+		if (!IsMissingId(it.key(), kinds, *m_alpha))
 		{
-			m_lastContainerCounts.insert(it.key(), sc.container);
+			continue;
 		}
-		if (sc.entity > 0)
-		{
-			m_lastEntityCounts.insert(it.key(), sc.entity);
-		}
-		if (sc.other > 0)
-		{
-			m_lastOtherCounts.insert(it.key(), sc.other);
-		}
+		missing.append(ResourceIdCount{it.key(), n, IdKind::Item});
+		++missingCount;
 	}
+	missing = SortCounts(missing);
 
-	const QHash<QString, int> counts = FlattenSectionCounts(sectionCounts, true, true, true);
-	const QVector<ResourceIdCount> missing = DiffMissingIds(counts, *m_alpha);
-	m_lastAllCounts = counts;
 	m_lastDiffV6Path = v6Path;
-	m_lastDiffTotalSchematicIds = counts.size();
-	m_lastDiffMissingCount = missing.size();
+	m_lastDiffTotalSchematicIds = sectionCounts.size();
+	m_lastDiffMissingCount = missingCount;
 	m_lastDiffLines.clear();
 	for (const ResourceIdCount &rc : missing)
 	{
@@ -1128,26 +1124,47 @@ void MainWindow::runItemListDiffOn(const QString &v6Path)
 	}
 
 	m_lastDiffSummary = QStringLiteral(
-		"对比文件：%1\nItemList：%2（%3 个 id）\n投影中扫描到 id 种类：%4\n"
-		"其中 ItemList 中没有（缺失）：%5 种\n"
-		"列表与次数会随「调色板/容器/实体」勾选变化。\n"
-		"「NBT 出现次数」不等于建筑方块总数。")
-		.arg(v6Path,
-			QFileInfo(m_alpha->path).fileName(),
-			QString::number(m_alpha->ids.size()),
-			QString::number(m_lastDiffTotalSchematicIds),
-			QString::number(m_lastDiffMissingCount));
+		"对比文件：%1\nItemList：%2（物品 %3 · 方块 %4 · 方块实体 %5 · 实体 %6 · 流体 %7 · 其它 %8）\n"
+		"投影中扫描到 id 种类：%9\n按类别判定缺失：%10 种\n"
+		"说明：方块走 blocks、容器/实体物品走 items、实体类型走 entities、"
+		"方块实体类型走 blockEntities、流体走 fluids。")
+		.arg(v6Path)
+		.arg(QFileInfo(m_alpha->path).fileName())
+		.arg(m_alpha->idsOf(IdKind::Item).size())
+		.arg(m_alpha->idsOf(IdKind::Block).size())
+		.arg(m_alpha->idsOf(IdKind::BlockEntity).size())
+		.arg(m_alpha->idsOf(IdKind::Entity).size())
+		.arg(m_alpha->idsOf(IdKind::Fluid).size())
+		.arg(m_alpha->idsOf(IdKind::Other).size())
+		.arg(m_lastDiffTotalSchematicIds)
+		.arg(m_lastDiffMissingCount);
 
 	appendLog(QStringLiteral("ItemList 对比：%1 → 缺失 %2 种 id（投影共 %3 种）")
 		.arg(QFileInfo(v6Path).fileName())
 		.arg(m_lastDiffMissingCount)
 		.arg(m_lastDiffTotalSchematicIds));
+	if (!m_lastDiffLines.isEmpty())
+	{
+		const int show = static_cast<int>(std::min<qsizetype>(8, m_lastDiffLines.size()));
+		for (int i = 0; i < show; ++i)
+		{
+			const QStringList p = m_lastDiffLines.at(i).split(QLatin1Char('\t'));
+			appendLog(QStringLiteral("  缺失：%1 ×%2").arg(p.value(0), p.value(1)));
+		}
+		if (m_lastDiffLines.size() > show)
+		{
+			appendLog(QStringLiteral("  … 共 %1 种，请在对比窗口查看/替换").arg(m_lastDiffLines.size()));
+		}
+	}
+	else
+	{
+		appendLog(QStringLiteral("投影中的 id 均在 ItemList 对应类别中。"));
+	}
 
 	m_btnShowDiff->setEnabled(true);
 	refreshItemListLabel();
 	showItemListReplaceDialog();
 }
-
 
 void MainWindow::showItemListReplaceDialog()
 {
@@ -1155,16 +1172,54 @@ void MainWindow::showItemListReplaceDialog()
 	{
 		return;
 	}
-	if (m_lastDiffV6Path.isEmpty() || m_lastAllCounts.isEmpty())
+	if (m_lastDiffV6Path.isEmpty() || g_lastSectionCounts.isEmpty())
 	{
 		return;
 	}
 
+	// 替换目标：id -> 目标 id
 	QHash<QString, QString> replaceTargets;
+	// 每个 id 的类别（用于决定作用范围与下拉候选）
+	QHash<QString, IdKind> idKinds;
+	for (auto it = g_lastSectionCounts.constBegin(); it != g_lastSectionCounts.constEnd(); ++it)
+	{
+		const SectionIdCounts &sc = it.value();
+		IdKind k = IdKind::Item;
+		if (sc.blockEntity > 0 && sc.palette == 0 && sc.container == 0 &&
+			sc.entity == 0 && sc.entityType == 0 && sc.fluid == 0 && sc.blockTick == 0)
+		{
+			k = IdKind::BlockEntity;
+		}
+		else if (sc.entityType > 0 && sc.palette == 0 && sc.container == 0 &&
+			sc.entity == 0 && sc.blockEntity == 0 && sc.fluid == 0 && sc.blockTick == 0)
+		{
+			k = IdKind::Entity;
+		}
+		else if (sc.fluid > 0 && sc.palette == 0 && sc.container == 0 &&
+			sc.entity == 0 && sc.blockEntity == 0 && sc.entityType == 0 && sc.blockTick == 0)
+		{
+			k = IdKind::Fluid;
+		}
+		else if ((sc.palette > 0 || sc.blockTick > 0) && sc.container == 0 && sc.entity == 0 &&
+			sc.blockEntity == 0 && sc.entityType == 0 && sc.fluid == 0)
+		{
+			k = IdKind::Block;
+		}
+		else if (sc.other > 0 && sc.palette == 0 && sc.container == 0 && sc.entity == 0 &&
+			sc.blockEntity == 0 && sc.entityType == 0 && sc.fluid == 0 && sc.blockTick == 0)
+		{
+			k = IdKind::Other;
+		}
+		else
+		{
+			k = IdKind::Item;
+		}
+		idKinds.insert(it.key(), k);
+	}
 
 	QDialog dlg(this);
 	dlg.setWindowTitle(QStringLiteral("物品对比 / 替换（ItemList）"));
-	dlg.resize(900, 580);
+	dlg.resize(960, 600);
 	dlg.setStyleSheet(styleSheet());
 	auto *lay = new QVBoxLayout(&dlg);
 
@@ -1176,38 +1231,45 @@ void MainWindow::showItemListReplaceDialog()
 	auto *chkShowAll = new QCheckBox(QStringLiteral("显示全部"), &dlg);
 	auto *chkPalette = new QCheckBox(QStringLiteral("调色板"), &dlg);
 	auto *chkContainer = new QCheckBox(QStringLiteral("容器"), &dlg);
+	auto *chkBlockEntity = new QCheckBox(QStringLiteral("方块实体类型"), &dlg);
 	auto *chkEntity = new QCheckBox(QStringLiteral("实体"), &dlg);
+	auto *chkFluid = new QCheckBox(QStringLiteral("流体"), &dlg);
+	auto *chkOther = new QCheckBox(QStringLiteral("其它"), &dlg);
 	chkPalette->setChecked(true);
 	chkContainer->setChecked(true);
+	chkBlockEntity->setChecked(true);
 	chkEntity->setChecked(true);
+	chkFluid->setChecked(true);
+	chkOther->setChecked(true);
 	optRow->addWidget(chkShowAll);
 	optRow->addStretch(1);
 	optRow->addWidget(new QLabel(QStringLiteral("替换作用范围："), &dlg));
 	optRow->addWidget(chkPalette);
 	optRow->addWidget(chkContainer);
+	optRow->addWidget(chkBlockEntity);
 	optRow->addWidget(chkEntity);
+	optRow->addWidget(chkFluid);
+	optRow->addWidget(chkOther);
 	lay->addLayout(optRow);
 
-	auto *hint = new QLabel(QStringLiteral("「替换为」：双击编辑；箭头从 ItemList 选择。勾选范围只会筛选行，不会重建控件。"), &dlg);
-	hint->setObjectName("hintLabel");
-	lay->addWidget(hint);
-
 	auto *table = new QTableWidget(&dlg);
-	table->setColumnCount(3);
+	table->setColumnCount(4);
 	table->setHorizontalHeaderLabels({
-		QStringLiteral("物品 id"),
+		QStringLiteral("id"),
+		QStringLiteral("类别"),
 		QStringLiteral("NBT 出现次数"),
-		QStringLiteral("替换为（ItemList）")});
+		QStringLiteral("替换为（同类 ItemList）")});
 	table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
 	table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-	table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+	table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+	table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
 	table->setEditTriggers(
 		QAbstractItemView::CurrentChanged | QAbstractItemView::EditKeyPressed);
 	table->setFocusPolicy(Qt::StrongFocus);
 	lay->addWidget(table, 1);
 
-	// 切回窗口时重置表格编辑状态，避免焦点卡住导致再点输入框无响应
+	// 切回窗口时重置编辑状态
 	{
 		class FocusResetFilter : public QObject
 		{
@@ -1219,12 +1281,9 @@ void MainWindow::showItemListReplaceDialog()
 		protected:
 			bool eventFilter(QObject *watched, QEvent *event) override
 			{
-				if (watched == m_dlg && m_table &&
-					event->type() == QEvent::WindowActivate)
+				if (watched == m_dlg && m_table && event->type() == QEvent::WindowActivate)
 				{
-					// 清空当前项以关闭可能卡住的编辑器（state() 为 protected，不可直接查）
-					const QModelIndex cur = m_table->currentIndex();
-					if (cur.isValid())
+					if (m_table->currentIndex().isValid())
 					{
 						m_table->setCurrentIndex(QModelIndex());
 					}
@@ -1244,67 +1303,60 @@ void MainWindow::showItemListReplaceDialog()
 		QObject::connect(&dlg, &QObject::destroyed, focusFilter, &QObject::deleteLater);
 	}
 
-	// 一次性汇总全部 id 及各区域次数
-	struct RowData
+	// 每类别一个候选列表模型（给委托按行类别选用）
+	QHash<int, QStringListModel *> kindModels;
+	for (int i = 0; i < static_cast<int>(IdKind::KindCount); ++i)
 	{
-		QString id;
-		int palette = 0;
-		int container = 0;
-		int entity = 0;
-		int other = 0;
-	};
-	QVector<RowData> allRows;
-	allRows.reserve(m_lastAllCounts.size());
-	for (auto it = m_lastAllCounts.constBegin(); it != m_lastAllCounts.constEnd(); ++it)
-	{
-		RowData rd;
-		rd.id = it.key();
-		rd.palette = m_lastPaletteCounts.value(it.key(), 0);
-		rd.container = m_lastContainerCounts.value(it.key(), 0);
-		rd.entity = m_lastEntityCounts.value(it.key(), 0);
-		rd.other = m_lastOtherCounts.value(it.key(), 0);
-		allRows.append(rd);
-	}
-	std::sort(allRows.begin(), allRows.end(),
-		[](const RowData &a, const RowData &b) {
-			return a.id < b.id;
-		});
-
-	QSet<QString> missingSet;
-	for (const QString &line : m_lastDiffLines)
-	{
-		missingSet.insert(line.split(QLatin1Char('\t')).value(0));
+		const IdKind k = static_cast<IdKind>(i);
+		auto *m = new QStringListModel(RankItemListSuggestions(m_alpha->idsOf(k), QString()), &dlg);
+		kindModels.insert(i, m);
 	}
 
-	QStringList fullList = RankItemListSuggestions(m_alpha->ids, QString());
-	auto *fullListModel = new QStringListModel(fullList, &dlg);
-
-	class ComboDelegate : public QStyledItemDelegate
+	class KindComboDelegate : public QStyledItemDelegate
 	{
 	public:
-		ComboDelegate(QStringListModel *fullModel, QSet<QString> *ids, QObject *parent = nullptr)
-			: QStyledItemDelegate(parent), m_fullModel(fullModel), m_ids(ids)
+		KindComboDelegate(QHash<int, QStringListModel *> *models, QObject *parent = nullptr)
+			: QStyledItemDelegate(parent), m_models(models)
 		{
 		}
 		QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &,
-			const QModelIndex &) const override
+			const QModelIndex &index) const override
 		{
+			const int kindInt = index.data(Qt::UserRole + 2).toInt();
+			QStringListModel *full = m_models->value(kindInt, nullptr);
 			auto *combo = new QComboBox(parent);
 			combo->setEditable(true);
 			combo->setInsertPolicy(QComboBox::NoInsert);
-			combo->setModel(m_fullModel);
-			if (m_ids)
+			if (full)
 			{
+				combo->setModel(full);
 				auto *filterModel = new QStringListModel(combo);
 				auto *completer = new QCompleter(filterModel, combo);
 				completer->setCaseSensitivity(Qt::CaseInsensitive);
 				completer->setFilterMode(Qt::MatchContains);
 				completer->setCompletionMode(QCompleter::PopupCompletion);
 				combo->setCompleter(completer);
+				const QStringList base = full->stringList();
 				QObject::connect(combo, &QComboBox::editTextChanged, combo,
-					[filterModel, ids = m_ids](const QString &text) {
+					[filterModel, base](const QString &text) {
+						const QString q = text.trimmed().toLower();
+						QStringList out;
+						if (q.isEmpty())
+						{
+							out = base;
+						}
+						else
+						{
+							for (const QString &s : base)
+							{
+								if (s.toLower().contains(q))
+								{
+									out << s;
+								}
+							}
+						}
 						const QSignalBlocker blocker(filterModel);
-						filterModel->setStringList(RankItemListSuggestions(*ids, text));
+						filterModel->setStringList(out);
 					});
 			}
 			combo->setFocusPolicy(Qt::StrongFocus);
@@ -1342,15 +1394,119 @@ void MainWindow::showItemListReplaceDialog()
 			QStyledItemDelegate::setModelData(editor, model, index);
 		}
 	private:
-		QStringListModel *m_fullModel = nullptr;
-		QSet<QString> *m_ids = nullptr;
+		QHash<int, QStringListModel *> *m_models = nullptr;
 	};
+	table->setItemDelegateForColumn(3, new KindComboDelegate(&kindModels, table));
 
-	table->setItemDelegateForColumn(2, new ComboDelegate(fullListModel, &m_alpha->ids, table));
+	struct RowData
+	{
+		QString id;
+		IdKind kind = IdKind::Item;
+		int palette = 0;
+		int container = 0;
+		int entity = 0;
+		int blockEntity = 0;
+		int entityType = 0;
+		int fluid = 0;
+		int blockTick = 0;
+		int other = 0;
+	};
+	QVector<RowData> allRows;
+	allRows.reserve(g_lastSectionCounts.size());
+	for (auto it = g_lastSectionCounts.constBegin(); it != g_lastSectionCounts.constEnd(); ++it)
+	{
+		const SectionIdCounts &sc = it.value();
+		RowData rd;
+		rd.id = it.key();
+		rd.kind = idKinds.value(it.key(), IdKind::Item);
+		rd.palette = sc.palette;
+		rd.container = sc.container;
+		rd.entity = sc.entity;
+		rd.blockEntity = sc.blockEntity;
+		rd.entityType = sc.entityType;
+		rd.fluid = sc.fluid;
+		rd.blockTick = sc.blockTick;
+		rd.other = sc.other;
+		allRows.append(rd);
+	}
+	std::sort(allRows.begin(), allRows.end(),
+		[](const RowData &a, const RowData &b) { return a.id < b.id; });
+
+	auto scopedCount = [&](const RowData &rd) {
+		int n = 0;
+		if (chkPalette->isChecked()) n += rd.palette + rd.blockTick;
+		if (chkContainer->isChecked()) n += rd.container;
+		if (chkEntity->isChecked()) n += rd.entity + rd.entityType;
+		if (chkBlockEntity->isChecked()) n += rd.blockEntity;
+		if (chkFluid->isChecked()) n += rd.fluid;
+		if (chkOther->isChecked()) n += rd.other;
+		return n;
+	};
+	auto isMissingRow = [&](const RowData &rd) {
+		// 只判断「当前勾选的类别」里该 id 是否存在
+		bool checked = false;
+		if (chkPalette->isChecked() && (rd.palette > 0 || rd.blockTick > 0))
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::Block).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		if (chkContainer->isChecked() && rd.container > 0)
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::Item).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		if (chkEntity->isChecked() && rd.entity > 0)
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::Item).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		if (chkEntity->isChecked() && rd.entityType > 0)
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::Entity).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		if (chkBlockEntity->isChecked() && rd.blockEntity > 0)
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::BlockEntity).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		if (chkFluid->isChecked() && rd.fluid > 0)
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::Fluid).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		if (chkOther->isChecked() && rd.other > 0)
+		{
+			checked = true;
+			if (m_alpha->idsOf(IdKind::Other).contains(rd.id))
+			{
+				return false;
+			}
+		}
+		return checked;
+	};
 
 	bool building = false;
 
-	// 只建一次全部行
+	// 只建一次行（QTableWidget 自身可滚动；避免逐行挂控件）
 	building = true;
 	table->setUpdatesEnabled(false);
 	table->blockSignals(true);
@@ -1359,29 +1515,31 @@ void MainWindow::showItemListReplaceDialog()
 	{
 		auto *idItem = new QTableWidgetItem(allRows[i].id);
 		idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
+		idItem->setData(Qt::UserRole, allRows[i].id);
+		idItem->setData(Qt::UserRole + 2, static_cast<int>(allRows[i].kind));
 		table->setItem(i, 0, idItem);
+
+		auto *kindItem = new QTableWidgetItem(
+			QString::fromUtf8(IdKindName(allRows[i].kind)));
+		kindItem->setFlags(kindItem->flags() & ~Qt::ItemIsEditable);
+		table->setItem(i, 1, kindItem);
 
 		auto *cntItem = new QTableWidgetItem(QStringLiteral("0"));
 		cntItem->setFlags(cntItem->flags() & ~Qt::ItemIsEditable);
-		table->setItem(i, 1, cntItem);
+		table->setItem(i, 2, cntItem);
 
 		auto *replItem = new QTableWidgetItem(QString());
 		replItem->setFlags(replItem->flags() | Qt::ItemIsEditable);
 		replItem->setData(Qt::UserRole, allRows[i].id);
-		table->setItem(i, 2, replItem);
+		replItem->setData(Qt::UserRole + 2, static_cast<int>(allRows[i].kind));
+		table->setItem(i, 3, replItem);
 	}
 	table->blockSignals(false);
 	table->setUpdatesEnabled(true);
 	building = false;
 
-	// 勾选时：只改次数 + 隐藏行，不 new 控件
 	auto applyFilter = [&]() {
 		const bool showAll = chkShowAll->isChecked();
-		const bool usePal = chkPalette->isChecked();
-		const bool useCon = chkContainer->isChecked();
-		const bool useEnt = chkEntity->isChecked();
-		const bool useOther = usePal && useCon && useEnt;
-
 		building = true;
 		const bool updates = table->updatesEnabled();
 		table->setUpdatesEnabled(false);
@@ -1389,15 +1547,10 @@ void MainWindow::showItemListReplaceDialog()
 		for (int i = 0; i < allRows.size(); ++i)
 		{
 			const RowData &rd = allRows[i];
-			int n = 0;
-			if (usePal) n += rd.palette;
-			if (useCon) n += rd.container;
-			if (useEnt) n += rd.entity;
-			if (useOther) n += rd.other;
-
-			const bool visible = (n > 0) && (showAll || missingSet.contains(rd.id));
-			table->setRowHidden(i, !visible);
-			if (auto *cnt = table->item(i, 1))
+			const int n = scopedCount(rd);
+			const bool vis = (n > 0) && (showAll || isMissingRow(rd));
+			table->setRowHidden(i, !vis);
+			if (auto *cnt = table->item(i, 2))
 			{
 				cnt->setText(QString::number(n));
 			}
@@ -1407,23 +1560,23 @@ void MainWindow::showItemListReplaceDialog()
 		building = false;
 	};
 
-	// 防抖：连点勾选不会多次全表扫描卡死
 	auto *debounce = new QTimer(&dlg);
 	debounce->setSingleShot(true);
-	debounce->setInterval(80);
-	auto requestFilter = [&debounce]() {
-		debounce->start();
-	};
+	debounce->setInterval(60);
+	auto requestFilter = [&debounce]() { debounce->start(); };
 	QObject::connect(debounce, &QTimer::timeout, &dlg, applyFilter);
 	QObject::connect(chkShowAll, &QCheckBox::toggled, &dlg, requestFilter);
 	QObject::connect(chkPalette, &QCheckBox::toggled, &dlg, requestFilter);
 	QObject::connect(chkContainer, &QCheckBox::toggled, &dlg, requestFilter);
+	QObject::connect(chkBlockEntity, &QCheckBox::toggled, &dlg, requestFilter);
 	QObject::connect(chkEntity, &QCheckBox::toggled, &dlg, requestFilter);
+	QObject::connect(chkFluid, &QCheckBox::toggled, &dlg, requestFilter);
+	QObject::connect(chkOther, &QCheckBox::toggled, &dlg, requestFilter);
 	applyFilter();
 
 	QObject::connect(table, &QTableWidget::itemChanged, &dlg,
 		[&replaceTargets, &building](QTableWidgetItem *item) {
-			if (building || item == nullptr || item->column() != 2)
+			if (building || item == nullptr || item->column() != 3)
 			{
 				return;
 			}
@@ -1459,20 +1612,49 @@ void MainWindow::showItemListReplaceDialog()
 				QStringLiteral("转换进行中，请稍后再应用替换。"));
 			return;
 		}
-		if (!chkPalette->isChecked() && !chkContainer->isChecked() && !chkEntity->isChecked())
+		if (!chkPalette->isChecked() && !chkContainer->isChecked() &&
+			!chkBlockEntity->isChecked() && !chkEntity->isChecked() &&
+			!chkFluid->isChecked() && !chkOther->isChecked())
 		{
 			QMessageBox::warning(&dlg, QStringLiteral("应用替换"),
 				QStringLiteral("请至少勾选一种替换作用范围。"));
 			return;
 		}
-		QHash<QString, QString> map;
-		for (auto it = replaceTargets.constBegin(); it != replaceTargets.constEnd(); ++it)
+
+		QHash<QString, QString> map = replaceTargets;
+		for (int i = 0; i < table->rowCount(); ++i)
+		{
+			if (table->isRowHidden(i))
+			{
+				continue;
+			}
+			QString src;
+			QString dst;
+			if (auto *combo = qobject_cast<QComboBox *>(table->cellWidget(i, 3)))
+			{
+				src = combo->property("srcId").toString();
+				dst = combo->currentText().trimmed();
+			}
+			else if (auto *replIt = table->item(i, 3))
+			{
+				src = replIt->data(Qt::UserRole).toString();
+				dst = replIt->text().trimmed();
+			}
+			if (src.isEmpty() || dst.isEmpty() || src == dst)
+			{
+				continue;
+			}
+			map.insert(src, dst);
+		}
+		QHash<QString, QString> cleaned;
+		for (auto it = map.constBegin(); it != map.constEnd(); ++it)
 		{
 			if (!it.value().isEmpty() && it.key() != it.value())
 			{
-				map.insert(it.key(), it.value());
+				cleaned.insert(it.key(), it.value());
 			}
 		}
+		map = cleaned;
 		if (map.isEmpty())
 		{
 			QMessageBox::information(&dlg, QStringLiteral("应用替换"),
@@ -1480,10 +1662,13 @@ void MainWindow::showItemListReplaceDialog()
 			return;
 		}
 
-		const QString scopeText = QStringLiteral("%1%2%3")
+		const QString scopeText = QStringLiteral("%1%2%3%4%5%6")
 			.arg(chkPalette->isChecked() ? QStringLiteral("调色板 ") : QString(),
 				chkContainer->isChecked() ? QStringLiteral("容器 ") : QString(),
-				chkEntity->isChecked() ? QStringLiteral("实体") : QString());
+				chkBlockEntity->isChecked() ? QStringLiteral("方块实体类型 ") : QString(),
+				chkEntity->isChecked() ? QStringLiteral("实体 ") : QString(),
+				chkFluid->isChecked() ? QStringLiteral("流体 ") : QString(),
+				chkOther->isChecked() ? QStringLiteral("其它") : QString());
 		const QString confirm = QStringLiteral(
 			"将把 %1 条替换规则写回：\n\n%2\n\n作用范围：%3\n\n会直接覆盖该 V6 文件。确定继续？")
 			.arg(map.size()).arg(m_lastDiffV6Path, scopeText);
@@ -1496,9 +1681,10 @@ void MainWindow::showItemListReplaceDialog()
 		QString err;
 		int changed = 0;
 		if (!ApplyIdReplacementsToLitematic(
-				m_lastDiffV6Path, map,
+				m_lastDiffV6Path, map, idKinds,
 				chkPalette->isChecked(), chkContainer->isChecked(), chkEntity->isChecked(),
-				err, changed))
+				chkBlockEntity->isChecked(), chkEntity->isChecked(), chkFluid->isChecked(),
+				chkOther->isChecked(), err, changed))
 		{
 			QMessageBox::warning(&dlg, QStringLiteral("替换失败"), err);
 			appendLog(QStringLiteral("替换失败：%1").arg(err));

@@ -97,11 +97,6 @@ private:
 	QString m_lastDiffV6Path;
 	QString m_lastDiffSummary;
 	QStringList m_lastDiffLines;
-	QHash<QString, int> m_lastAllCounts;
-	QHash<QString, int> m_lastPaletteCounts;
-	QHash<QString, int> m_lastContainerCounts;
-	QHash<QString, int> m_lastEntityCounts;
-	QHash<QString, int> m_lastOtherCounts;
 	int m_lastDiffTotalSchematicIds = 0;
 	int m_lastDiffMissingCount = 0;
 };
