@@ -367,6 +367,10 @@ FodyWeavers.xsd
 NBT_Compare/*.txt
 **/other/
 
+# Local GUI build output
+build-gui/
+Litematic_GUI/moc/
+
 # CMakeLists
 !CMakeLists.txt
 !**/CMakeLists.txt

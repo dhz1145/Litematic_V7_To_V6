@@ -105,3 +105,10 @@ include_directories(
 add_subdirectory(Litematic_V7_To_V6)
 add_subdirectory(NBT_Compare)
 add_subdirectory(NBT_Print)
+
+#可选 GUI（需要 Qt6/Qt5 Widgets）
+option(BUILD_GUI "Build Qt GUI" OFF)
+if(BUILD_GUI)
+    add_subdirectory(Litematic_GUI)
+endif()
+

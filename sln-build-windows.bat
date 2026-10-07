@@ -52,10 +52,31 @@ echo Upgrading solution with "%DEVENV%"
 "%DEVENV%" Litematic_V7_To_V6.sln /Upgrade
 del /Q UpgradeLog*.htm 2>nul
 
-"%MSBUILD%" Litematic_V7_To_V6.sln /p:Configuration=Release /p:Platform=%PLATFORM% /m
+"%MSBUILD%" Litematic_V7_To_V6.sln /p:Configuration=Release /p:Platform=%PLATFORM% /m /t:zlib;xxhash;Litematic_V7_To_V6;NBT_Compare;NBT_Print
 if %errorlevel% neq 0 exit /b %errorlevel%
+
+REM 可选：若设置了 QTDIR，再编 GUI（需本机安装 Qt MSVC）
+if defined QTDIR (
+  "%MSBUILD%" Litematic_V7_To_V6.sln /p:Configuration=Release /p:Platform=%PLATFORM% /m /t:Litematic_GUI
+  if !errorlevel! equ 0 (
+    if exist ".\%PLATFORM%\Release\Litematic_GUI.exe" (
+      if exist "%QTDIR%\bin\windeployqt.exe" (
+        "%QTDIR%\bin\windeployqt.exe" --release ".\%PLATFORM%\Release\Litematic_GUI.exe"
+      )
+    )
+  ) else (
+    echo Warning: Litematic_GUI build failed, skip GUI artifact.
+  )
+)
 
 mkdir "%OUTPUT_DIR%"
 copy /Y ".\%PLATFORM%\Release\Litematic_V7_To_V6.exe" "%OUTPUT_DIR%\"
 copy /Y ".\%PLATFORM%\Release\NBT_Compare.exe" "%OUTPUT_DIR%\"
 copy /Y ".\%PLATFORM%\Release\NBT_Print.exe" "%OUTPUT_DIR%\"
+if exist ".\%PLATFORM%\Release\Litematic_GUI.exe" (
+  xcopy /E /I /Y ".\%PLATFORM%\Release\*.dll" "%OUTPUT_DIR%\" >nul 2>nul
+  xcopy /E /I /Y ".\%PLATFORM%\Release\platforms" "%OUTPUT_DIR%\platforms\" >nul 2>nul
+  xcopy /E /I /Y ".\%PLATFORM%\Release\styles" "%OUTPUT_DIR%\styles\" >nul 2>nul
+  copy /Y ".\%PLATFORM%\Release\Litematic_GUI.exe" "%OUTPUT_DIR%\"
+)
+
