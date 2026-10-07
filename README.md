@@ -1,179 +1,118 @@
-# Litematic_V7_To_V6
-[![GitHub Releases](https://shields.io/github/v/release/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
-[![GitHub Releases downloads](https://shields.io/github/downloads/chenjunfu2/Litematic_V7_To_V6/total)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
-[![GitHub Repo stars](https://shields.io/github/stars/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/)  
-本工具在尽可能 **保留方块、方块实体、实体等数据** 的情况下，以映射数据的方式降低投影原理图的数据版本(或称之为投影降级)，将投影原理图 **从 V7(MC1.20.5+) 转换到 V6(MC1.20.4-)** ，使得旧版MC可以在尽量少数据损失的情况下打开新版本投影原理图。  
-  
-但由于不同 Minecraft / Litematica 版本之间存在数据格式差异，**不能保证所有新版本数据都能够在旧版本中完全保留或正常使用**。  
-  
-这是一个离线转换工具，不依赖任何 Minecraft 相关环境。  
-  
-项目主要使用 C++ 编写，并支持跨平台构建。  
-  
-## 使用方法
-### 输入方式
-转换器可以一次性转换**一个或多个**投影原理图文件。  
-  
-**在windows系统中：**  
-> 将一个或多个需要降低数据版本的投影原理图文件，拖拽到程序上，然后松开。
->  
-> *（当然你也可以在 Windows 中使用 Linux 的方式~）*
-> 
-> **特别注意，是拖拽投影原理图文件到程序文件上，显示为用xxx（程序名称）打开，而不是启动程序后把投影原理图文件拖拽到程序窗口里！不要再因为这种奇怪的问题给我报程序不工作的BUG了！**  
-  
-**在linux系统与其它系统中：**  
-> 将一个或多个需要降低数据版本的投影原理图文件，作为启动命令参数传递，并执行。
-> 
-> - 单个文件
->   ```text
->   ./Litematic_V7_To_V6 <your_schematic>.litematic
->   ```
->   
-> - 多个文件
->   ```text
->   ./Litematic_V7_To_V6 <your_schematic_1>.litematic <your_schematic_2>.litematic ...
->   ```
+# Litematic V7 → V6
 
-### 输出方式
-生成的文件会保存在输入文件所在的同一目录中。  
-**程序在任何情况下都不会覆盖原始文件，也不会覆盖任何已有的转换结果。**  
-  
-输出文件名格式为：  
-> `<原文件名>_V6_[<时间戳(毫秒)>].<原扩展名>`
-  
-例如：  
-> `example.litematic`
-  
-得到：
-> `example_V6_[1788703616542].litematic`
-  
-**特别的：**  
-程序会使用当前系统时间的毫秒级 Unix 时间戳生成新文件名，并检查生成的文件名是否已经存在。  
-如果生成的文件名冲突，会等待一段时间后重新生成文件名并再次尝试，最多尝试 10 次，而后失败，  
-如果发生此类失败情况，可以检查是否因为目录下有过多此类文件或更换干净目录重试转换。  
-  
-## 备注
-**建议始终保留原始投影原理图文件，不要在获得转换结果后删除原文件。**  
-如果未来程序修复了 Bug、改进了转换逻辑，保留原始文件可以重新进行转换，从而获得更好的转换结果。  
-  
-## 跨平台
-本项目使用Github CI自动完成跨平台构建  
-请在[Releases](../../releases)页面中下载所需平台的编译产物  
+[![Latest release](https://img.shields.io/github/v/release/dhz1145/Litematic_V7_To_V6)](https://github.com/dhz1145/Litematic_V7_To_V6/releases)
+[![Release downloads](https://img.shields.io/github/downloads/dhz1145/Litematic_V7_To_V6/total)](https://github.com/dhz1145/Litematic_V7_To_V6/releases)
+[![CI](https://github.com/dhz1145/Litematic_V7_To_V6/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/dhz1145/Litematic_V7_To_V6/actions/workflows/c-cpp.yml)
+
+一个离线的 Litematica 投影降级工具，将 **V7（Minecraft 1.20.5+）投影转换为 V6（Minecraft 1.20.4-）**。转换过程使用数据映射，尽量保留方块、方块实体、实体、容器物品、流体 tick 等数据，方便旧版本 Minecraft 打开新版本投影。
+
+不同 Minecraft、Litematica 和模组版本之间存在数据格式差异，因此无法保证所有新版本数据都能在旧版本中完全保留或正常使用。程序不会覆盖原始投影文件，也不会覆盖已有的转换结果。
+
+## 功能
+
+- Windows 图形界面和跨平台命令行工具。
+- 支持一次转换一个或多个 `.litematic` 文件。
+- 输出安全写入输入文件所在目录，自动生成带毫秒时间戳的新文件名。
+- GUI 支持加载 ItemList，转换后对比投影中缺失的资源 ID。
+- ItemList 对比按 `items`、`blocks`、`blockEntities`、`entities`、`fluids` 分类显示，并支持分类筛选、候选替换和定向写回。
+
+## ItemList 从哪里来
+
+本项目使用的 ItemList JSON 由独立项目 [ItemLister](https://github.com/dhz1145/itemlister) 在 Minecraft 中导出。请先安装并运行 ItemLister，使用它的导出功能生成 JSON，再将该文件加载到本项目的 GUI 中。
+
+本项目读取的是 ItemLister 的 `itemlister/2` 格式，包含以下资源类别：
+
+- `items`：物品 ID
+- `blocks`：方块 ID
+- `blockEntities`：方块实体 ID
+- `entities`：实体 ID
+- `fluids`：流体 ID
+
+ItemList 是外部导入的数据，本项目不会替代 ItemLister 生成它。若 ItemList 与 Minecraft 实例、模组版本不匹配，对比结果也会随之变化。
+
+## Windows GUI 使用方法
+
+1. 从 [Releases](https://github.com/dhz1145/Litematic_V7_To_V6/releases) 下载 Windows GUI 压缩包并解压。
+2. 启动 `Litematic_GUI.exe`。
+3. 勾选 **ItemList**，点击 **加载 ItemList**，选择由 ItemLister 导出的 JSON。
+4. 点击 **添加文件**，选择一个或多个 `.litematic` 投影。
+5. 点击 **开始转换**。
+6. 转换完成后打开 ItemList 对比，查看缺失资源的类别、计数和筛选结果；需要时选择同类候选 ID 并应用替换。
+
+默认输出目录是源文件所在目录，也可以在界面中选择其它输出目录。GUI 不会覆盖源文件。
+
+## 命令行使用方法
+
+Linux、macOS 和其它支持命令行的环境：
+
+```text
+./Litematic_V7_To_V6 <your_schematic>.litematic
+```
+
+也可以一次传入多个文件：
+
+```text
+./Litematic_V7_To_V6 <schematic_1>.litematic <schematic_2>.litematic
+```
+
+Windows 命令行同样支持上述参数方式；Windows 用户也可以直接将投影文件拖到程序图标上。
+
+## 输出文件
+
+输出文件会写入输入文件所在目录，命名格式为：
+
+```text
+<原文件名>_V6_[<毫秒时间戳>].litematic
+```
+
+例如：
+
+```text
+example.litematic
+→ example_V6_[1788703616542].litematic
+```
+
+程序会检查目标文件名是否冲突，最多重试 10 次。建议始终保留原始投影，以便未来修复问题或改进转换逻辑后重新转换。
+
+## 下载
+
+预编译文件和每个版本的更新说明位于 [GitHub Releases](https://github.com/dhz1145/Litematic_V7_To_V6/releases)。GitHub Actions 会为 Windows、Linux、macOS 和 Android 构建对应产物；Windows GUI 目前提供 x64 构建。
+
+## 从源码构建
+
+项目使用 CMake。构建命令行版本：
+
+```text
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+构建 Qt GUI 时启用 `BUILD_GUI`，并提供 Qt 6：
+
+```text
+cmake -S . -B build-gui -DBUILD_GUI=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-gui --target Litematic_GUI --config Release
+```
 
 ## 实现与依赖
-本项目代码参考了[投影Mod](https://github.com/sakura-ryoko/litematica)的部分代码  
-使用的NBT库为：[NBT_CPP](https://github.com/chenjunfu2/NBT_CPP/)  
-其它库依赖：[zlib](https://github.com/madler/zlib)和[xxhash](https://github.com/Cyan4973/xxHash)  
 
-## 1.20.x Mod版本
-本项目还作为此Mod的JNI库被调用。  
-详情请见：[litematica-extra](https://github.com/shuangshun/litematica-extra)  
+- 部分转换逻辑参考 [Litematica](https://github.com/sakura-ryoko/litematica)。
+- NBT 库：[NBT_CPP](https://github.com/chenjunfu2/NBT_CPP/)。
+- 其它依赖：[zlib](https://github.com/madler/zlib) 和 [xxHash](https://github.com/Cyan4973/xxHash)。
+- 项目也可作为 [litematica-extra](https://github.com/shuangshun/litematica-extra) 的 JNI 库使用。
 
-------------------------------------------------------------------------------------------
+## English overview
 
-# Litematic_V7_To_V6
+Litematic V7 → V6 is an offline converter for Litematica schematics. It converts **V7 (Minecraft 1.20.5+)** data to **V6 (Minecraft 1.20.4-)** through data mappings and tries to preserve blocks, block entities, entities, inventories, fluid ticks, and other supported data.
 
-[![GitHub Releases](https://shields.io/github/v/release/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
-[![GitHub Releases downloads](https://shields.io/github/downloads/chenjunfu2/Litematic_V7_To_V6/total)](https://github.com/chenjunfu2/Litematic_V7_To_V6/releases)
-[![GitHub Repo stars](https://shields.io/github/stars/chenjunfu2/Litematic_V7_To_V6)](https://github.com/chenjunfu2/Litematic_V7_To_V6/)
+The GUI can import `itemlister/2` JSON files, compare resource IDs found in a converted schematic, filter missing IDs by category, suggest replacements from the same category, and write selected replacements back to the output schematic.
 
-This tool downgrades Litematica schematic data using a **data-mapping approach**, while attempting to **preserve blocks, block entities, entities, and other data** as much as possible. It converts Litematica schematics **from V7 (MC 1.20.5+) to V6 (MC 1.20.4-)**, allowing older versions of Minecraft to open schematics created by newer versions while minimizing data loss.
+Those ItemList files are exported in Minecraft by the separate [ItemLister project](https://github.com/dhz1145/itemlister). Generate the JSON with ItemLister first, then load it in the GUI. The converter itself does not generate ItemList files.
 
-However, due to differences in data formats between different Minecraft / Litematica versions, **there is no guarantee that all data from newer versions can be fully preserved or used correctly in older versions**.
+See [Releases](https://github.com/dhz1145/Litematic_V7_To_V6/releases) for prebuilt binaries.
 
-This is an offline conversion tool and does not depend on any Minecraft-related environment.
-
-The project is mainly written in C++ and supports cross-platform builds.
-
-## Usage
-
-### Input
-
-The converter can process **one or multiple** Litematica schematic files at once.
-
-**On Windows:**
-
-> Drag and drop one or more schematic files onto the program and release them.
->
-> *(You can also use the Linux-style command-line method on Windows~)*
-
-**On Linux and other systems:**
-
-> Pass one or more schematic files as command-line arguments when launching the program.
->
-> * Single file:
->
->   ```text
->   ./Litematic_V7_To_V6 <your_schematic>.litematic
->   ```
->
-> * Multiple files:
->
->   ```text
->   ./Litematic_V7_To_V6 <your_schematic_1>.litematic <your_schematic_2>.litematic ...
->   ```
-
-### Output
-
-Converted files are saved in the **same directory as the input files**.
-
-**The program will never overwrite the original files or any previously generated conversion results.**
-
-The output filename format is:
-
-> `<original_filename>_V6_[<timestamp_in_milliseconds>].<original_extension>`
-
-For example:
-
-> `example.litematic`
-
-becomes:
-
-> `example_V6_[1788703616542].litematic`
-
-**Filename generation:**
-
-The program uses the current system time as a **millisecond-level Unix timestamp** to generate a new filename, and checks whether the generated filename already exists.
-
-If a filename collision occurs, the program waits for a short period, generates a new filename, and retries. It will retry up to 10 times before failing.
-
-If this happens, check whether the target directory contains too many similar conversion files, or try converting the file again in a clean directory.
-
-## Notes
-
-**It is strongly recommended to always keep the original Litematica schematic files instead of deleting them after conversion.**
-
-If the program fixes bugs or improves its conversion logic in the future, keeping the original files allows you to convert them again and potentially obtain better results.
-
-## Cross-Platform
-
-This project uses GitHub CI to automatically perform cross-platform builds.
-
-Please visit the [Releases](../../releases) page to download the appropriate build for your platform.
-
-## Implementation and Dependencies
-
-Parts of this project are based on code from [Litematica](https://github.com/sakura-ryoko/litematica).
-
-NBT library:
-
-* [NBT_CPP](https://github.com/chenjunfu2/NBT_CPP/)
-
-Other dependencies:
-
-* [zlib](https://github.com/madler/zlib)
-* [xxHash](https://github.com/Cyan4973/xxHash)
-
-## 1.20.x Mod Version
-
-This project is also used as the JNI library for this mod.
-
-For more information, see:
-
-[litematica-extra](https://github.com/shuangshun/litematica-extra)
-
-------------------------------------------------------------------------------------------
+---
 
 ## Star History
-[![Star History Chart](https://api.star-history.com/image?repos=chenjunfu2/Litematic_V7_To_V6&type=date&legend=top-left)](https://www.star-history.com/?repos=chenjunfu2%2FLitematic_V7_To_V6&type=date&legend=top-left)
 
+[![Star History Chart](https://api.star-history.com/image?repos=dhz1145/Litematic_V7_To_V6&type=date&legend=top-left)](https://www.star-history.com/?repos=dhz1145%2FLitematic_V7_To_V6&type=date&legend=top-left)
