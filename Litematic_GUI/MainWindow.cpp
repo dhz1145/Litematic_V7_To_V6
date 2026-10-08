@@ -6,8 +6,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QColor>
-#include <QComboBox>
 #include <QCompleter>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
@@ -1259,13 +1259,18 @@ void MainWindow::showItemListReplaceDialog()
 		QStringLiteral("类别"),
 		QStringLiteral("NBT 出现次数"),
 		QStringLiteral("替换为（同类 ItemList）")});
+	table->horizontalHeader()->setSectionsClickable(false);
+	table->horizontalHeader()->setHighlightSections(false);
 	table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
 	table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 	table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
 	table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
+	// Clicking a header closes the editor without changing the current cell.
+	// Allow a selected cell to reopen directly, as well as on double-click/F2.
 	table->setEditTriggers(
-		QAbstractItemView::CurrentChanged | QAbstractItemView::EditKeyPressed);
+		QAbstractItemView::CurrentChanged | QAbstractItemView::SelectedClicked |
+		QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
 	table->setFocusPolicy(Qt::StrongFocus);
 	lay->addWidget(table, 1);
 
@@ -1303,75 +1308,122 @@ void MainWindow::showItemListReplaceDialog()
 		QObject::connect(&dlg, &QObject::destroyed, focusFilter, &QObject::deleteLater);
 	}
 
-	// 每类别一个候选列表模型（给委托按行类别选用）
-	QHash<int, QStringListModel *> kindModels;
+	// 每类别一组候选 ID；输入补全和下拉选择共用同一候选模型。
+	QHash<int, QSet<QString>> kindIds;
 	for (int i = 0; i < static_cast<int>(IdKind::KindCount); ++i)
 	{
 		const IdKind k = static_cast<IdKind>(i);
-		auto *m = new QStringListModel(RankItemListSuggestions(m_alpha->idsOf(k), QString()), &dlg);
-		kindModels.insert(i, m);
+		kindIds.insert(i, m_alpha->idsOf(k));
 	}
+
+	class SuggestionComboBox : public QComboBox
+	{
+	public:
+		SuggestionComboBox(const QSet<QString> *ids, QStringListModel *model,
+			QWidget *parent = nullptr)
+			: QComboBox(parent), m_ids(ids), m_model(model)
+		{
+		}
+		void showPopup() override
+		{
+			if (!m_ids || !m_model || !lineEdit() || !completer())
+			{
+				return;
+			}
+			const QString text = lineEdit()->text();
+			const int cursorPosition = lineEdit()->cursorPosition();
+			{
+				const QSignalBlocker blocker(this);
+				m_model->setStringList(RankItemListSuggestions(*m_ids, text));
+				setCurrentIndex(-1);
+				setEditText(text);
+				lineEdit()->setCursorPosition(cursorPosition);
+			}
+			// Arrow clicks use the completion popup too, never QComboBox's popup.
+			lineEdit()->setFocus(Qt::OtherFocusReason);
+			completer()->setCompletionPrefix(text.trimmed());
+			completer()->complete(rect());
+		}
+		void hidePopup() override
+		{
+			if (completer() && completer()->popup())
+			{
+				completer()->popup()->hide();
+			}
+		}
+	private:
+		const QSet<QString> *m_ids = nullptr;
+		QStringListModel *m_model = nullptr;
+	};
 
 	class KindComboDelegate : public QStyledItemDelegate
 	{
 	public:
-		KindComboDelegate(QHash<int, QStringListModel *> *models, QObject *parent = nullptr)
-			: QStyledItemDelegate(parent), m_models(models)
+		KindComboDelegate(QHash<int, QSet<QString>> *idsByKind, QObject *parent = nullptr)
+			: QStyledItemDelegate(parent), m_idsByKind(idsByKind)
 		{
 		}
 		QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &,
 			const QModelIndex &index) const override
 		{
 			const int kindInt = index.data(Qt::UserRole + 2).toInt();
-			QStringListModel *full = m_models->value(kindInt, nullptr);
-			auto *combo = new QComboBox(parent);
+			const auto idsIt = m_idsByKind->constFind(kindInt);
+			const QSet<QString> *ids = idsIt != m_idsByKind->cend()
+				? &idsIt.value() : nullptr;
+			auto *candidateModel = new QStringListModel;
+			auto *combo = new SuggestionComboBox(ids, candidateModel, parent);
+			candidateModel->setParent(combo);
 			combo->setEditable(true);
 			combo->setInsertPolicy(QComboBox::NoInsert);
-			if (full)
+			if (ids)
 			{
-				combo->setModel(full);
-				auto *filterModel = new QStringListModel(combo);
-				auto *completer = new QCompleter(filterModel, combo);
+				combo->setModel(candidateModel);
+				auto *completer = new QCompleter(candidateModel, combo);
 				completer->setCaseSensitivity(Qt::CaseInsensitive);
 				completer->setFilterMode(Qt::MatchContains);
+				completer->setModelSorting(QCompleter::UnsortedModel);
 				completer->setCompletionMode(QCompleter::PopupCompletion);
-				combo->setCompleter(completer);
-				const QStringList base = full->stringList();
-				QObject::connect(combo, &QComboBox::editTextChanged, combo,
-					[filterModel, base](const QString &text) {
-						const QString q = text.trimmed().toLower();
-						QStringList out;
-						if (q.isEmpty())
-						{
-							out = base;
-						}
-						else
-						{
-							for (const QString &s : base)
-							{
-								if (s.toLower().contains(q))
-								{
-									out << s;
-								}
-							}
-						}
-						const QSignalBlocker blocker(filterModel);
-						filterModel->setStringList(out);
-					});
-			}
-			combo->setFocusPolicy(Qt::StrongFocus);
-			if (combo->lineEdit())
-			{
-				combo->lineEdit()->setFocusPolicy(Qt::StrongFocus);
-				combo->lineEdit()->setPlaceholderText(QStringLiteral("输入或点箭头选择"));
-			}
-			if (combo->view())
-			{
-				combo->view()->setStyleSheet(QStringLiteral(
+				completer->setMaxVisibleItems(12);
+				completer->popup()->setFocusPolicy(Qt::NoFocus);
+				completer->popup()->setStyleSheet(QStringLiteral(
 					"QAbstractItemView { background:#1f232b; color:#e6e8eb; "
 					"border:1px solid #2e3440; selection-background-color:#3d5a40; "
 					"selection-color:#ffffff; outline:none; }"));
+				combo->setCompleter(completer);
+
+				QObject::connect(combo->lineEdit(), &QLineEdit::textEdited, combo,
+					[combo, candidateModel, completer, ids](const QString &text) {
+						const QStringList matches = RankItemListSuggestions(*ids, text);
+						const int cursorPosition = combo->lineEdit()->cursorPosition();
+						{
+							const QSignalBlocker blocker(combo);
+							candidateModel->setStringList(matches);
+							combo->setCurrentIndex(-1);
+							combo->setEditText(text);
+							combo->lineEdit()->setCursorPosition(cursorPosition);
+						}
+						completer->setCompletionPrefix(text.trimmed());
+						if (matches.isEmpty())
+						{
+							completer->popup()->hide();
+						}
+						else if (combo->lineEdit()->hasFocus())
+						{
+							completer->complete(combo->rect());
+						}
+					});
 			}
+			else
+			{
+				combo->setModel(candidateModel);
+			}
+			combo->setFocusPolicy(Qt::StrongFocus);
+			combo->lineEdit()->setFocusPolicy(Qt::StrongFocus);
+			combo->lineEdit()->setPlaceholderText(QStringLiteral("输入搜索或点箭头选择"));
+			combo->view()->setStyleSheet(QStringLiteral(
+				"QAbstractItemView { background:#1f232b; color:#e6e8eb; "
+				"border:1px solid #2e3440; selection-background-color:#3d5a40; "
+				"selection-color:#ffffff; outline:none; }"));
 			return combo;
 		}
 		void setEditorData(QWidget *editor, const QModelIndex &index) const override
@@ -1394,9 +1446,9 @@ void MainWindow::showItemListReplaceDialog()
 			QStyledItemDelegate::setModelData(editor, model, index);
 		}
 	private:
-		QHash<int, QStringListModel *> *m_models = nullptr;
+		QHash<int, QSet<QString>> *m_idsByKind = nullptr;
 	};
-	table->setItemDelegateForColumn(3, new KindComboDelegate(&kindModels, table));
+	table->setItemDelegateForColumn(3, new KindComboDelegate(&kindIds, table));
 
 	struct RowData
 	{
